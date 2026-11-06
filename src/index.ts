@@ -93,7 +93,10 @@ export async function apply(ctx: Context, config: NodeConfig): Promise<void> {
 async function receive(ctx: Context, jobs: JobSessions, client: NodeClient, frame: Frame): Promise<void> {
   try {
     if (frame.type === 'assign') {
-      const sessionId = await jobs.ensure({ assignmentId: frame.assignmentId, directory: frame.directory, title: `job ${frame.assignmentId}` })
+      // The report tool is attached by `ensure`, which is why it needs the client: a job that cannot report back
+      // would leave the hub waiting with no way to learn what happened.
+      const sessionId = await jobs.ensure({ assignmentId: frame.assignmentId, directory: frame.directory, title: `job ${frame.assignmentId}` },
+        (assignmentId, report) => client.report(assignmentId, report))
       await jobs.deliver(sessionId, frame.text, frame.frameId)
       client.accepted(frame.assignmentId)
       client.ack(frame)

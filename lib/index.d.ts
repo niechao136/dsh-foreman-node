@@ -146,12 +146,21 @@ declare class JobSessions {
   private readonly ctx;
   /** Jobs by assignment id, so `running()` reports what this device actually holds rather than what it was told. */
   private readonly jobs;
+  /** Assignments whose Session already carries the report tool, so a redelivered assign registers it only once. */
+  private readonly reported;
   constructor(ctx: Context);
   /**
-   * Resolve or create the `job-<assignmentId>` Session in the given directory.
+   * Resolve or create the `job-<assignmentId>` Session in the given directory, attach its `foreman_report` tool, and
+   * register it so a heartbeat counts it.
+   *
+   * The tool is attached here rather than left to the caller because it is the only way a device can say what
+   * happened: without it a job Session's model has no `progress`/`ready`/`blocked`/`failed` channel, the hub waits
+   * forever, and the whole design's "never infer state from session events" requirement is moot. Registration is
+   * idempotent per assignment, so a redelivered `assign` does not stack a second tool on the same Session.
+   *
    * @returns the Session id.
    */
-  ensure(input: EnsureInput): Promise<string>;
+  ensure(input: EnsureInput, onReport?: (assignmentId: string, report: DeviceReport) => void): Promise<string>;
   /**
    * Deliver a task into its job Session, once per request id.
    *

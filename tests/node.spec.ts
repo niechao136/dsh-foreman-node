@@ -12,11 +12,17 @@ const ctx = () => {
   const created: string[] = []
   const presets: { session: unknown; preset: string }[] = []
   const existing = new Set<string>()
+  // Tools a job Session registers, shared with the test so it can assert what was attached and call it.
+  const registered: { name: string; execute?: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }[] = []
+  const sessionCtx = { tools: { register: (definition: { name: string; execute?: typeof registered[number]['execute'] }) => {
+    registered.push(definition)
+    return { dispose: () => {} }
+  } } }
   const fake = {
     workspaceRegistry: { create: async (cwd: string) => ({ id: cwd, attachSession: async () => {} }) },
     sessionController: {
       resolveAgent: async (sessionId: string) => existing.has(sessionId)
-        ? { agent: { id: sessionId, session: { id: sessionId }, inbox: { nextTurn: [], nextStep: [] }, ctx: fakeCtx() } }
+        ? { agent: { id: sessionId, session: { id: sessionId }, inbox: { nextTurn: [], nextStep: [] }, ctx: sessionCtx } }
         : { error: { code: 'session/not-found' } },
       create: async ({ sessionId }: { sessionId: string }) => { created.push(sessionId); existing.add(sessionId) },
       rename: async () => {},
@@ -25,10 +31,8 @@ const ctx = () => {
     logger: { warn: vi.fn() },
     sessionPersistence: { flush: async () => {}, open: async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }) },
   }
-  return { created, presets, fake: fake as never }
+  return { created, presets, registered, fake: fake as never }
 }
-
-const fakeCtx = () => ({ tools: { register: () => ({ dispose: () => {} }) } })
 
 it('creates one job session per assignment and reuses it on a redelivery', async () => {
   const { created, fake } = ctx()
@@ -52,6 +56,25 @@ it('reports what it holds and forgets a job the hub stopped', async () => {
   expect(jobs.running()).toEqual(['a1'])
   jobs.forget('a1')
   expect(jobs.running()).toEqual([])
+})
+
+it('attaches the foreman_report tool to the job session, once per assignment', async () => {
+  const { registered, fake } = ctx()
+  const jobs = new JobSessions(fake)
+  const report = vi.fn()
+  await jobs.ensure({ assignmentId: 'a1', directory: '/w/shop', title: 'job a1' }, report)
+  await jobs.ensure({ assignmentId: 'a1', directory: '/w/shop', title: 'job a1' }, report)
+  expect(registered.map(definition => definition.name)).toEqual(['foreman_report'])
+})
+
+it('reports through the registered tool with the device state', async () => {
+  const { registered, fake } = ctx()
+  const sent: unknown[] = []
+  const jobs = new JobSessions(fake)
+  await jobs.ensure({ assignmentId: 'a1', directory: '/w/shop', title: 'job a1' },
+    (assignmentId, report) => sent.push({ assignmentId, report }))
+  await registered[0]!.execute!({ state: 'ready', summary: 'done' }, { signal: new AbortController().signal })
+  expect(sent).toEqual([{ assignmentId: 'a1', report: { state: 'ready', summary: 'done' } }])
 })
 
 it('turns a foreman_report call into a report with the device state', async () => {

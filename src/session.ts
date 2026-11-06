@@ -58,14 +58,23 @@ export interface ToolRegistrar {
 export class JobSessions {
   /** Jobs by assignment id, so `running()` reports what this device actually holds rather than what it was told. */
   private readonly jobs = new Map<string, string>()
+  /** Assignments whose Session already carries the report tool, so a redelivered assign registers it only once. */
+  private readonly reported = new Set<string>()
 
   constructor(private readonly ctx: Context) {}
 
   /**
-   * Resolve or create the `job-<assignmentId>` Session in the given directory.
+   * Resolve or create the `job-<assignmentId>` Session in the given directory, attach its `foreman_report` tool, and
+   * register it so a heartbeat counts it.
+   *
+   * The tool is attached here rather than left to the caller because it is the only way a device can say what
+   * happened: without it a job Session's model has no `progress`/`ready`/`blocked`/`failed` channel, the hub waits
+   * forever, and the whole design's "never infer state from session events" requirement is moot. Registration is
+   * idempotent per assignment, so a redelivered `assign` does not stack a second tool on the same Session.
+   *
    * @returns the Session id.
    */
-  async ensure(input: EnsureInput): Promise<string> {
+  async ensure(input: EnsureInput, onReport?: (assignmentId: string, report: DeviceReport) => void): Promise<string> {
     const id = jobSessionId(input.assignmentId)
     const workspace = await this.ctx.workspaceRegistry.create(input.directory)
     let result = await this.ctx.sessionController.resolveAgent(id as SessionId)
@@ -78,6 +87,15 @@ export class JobSessions {
     // The one place the device's policy differs from the hub's: bounded, because no person is here to approve more.
     this.ctx.permissionPresets.set(result.agent.session, JOB_PRESET)
     await this.ctx.sessionController.rename({ sessionId: id as SessionId, title: input.title })
+    if (onReport !== undefined && !this.reported.has(input.assignmentId)) {
+      this.reported.add(input.assignmentId)
+      try { this.reportTools(result.agent as Agent, input.assignmentId, onReport) }
+      catch (error) {
+        // A Session that refuses the tool would never report: forget the guard so a later assign retries it.
+        this.reported.delete(input.assignmentId)
+        throw new Error(`could not attach foreman_report to ${id}: ${String(error)}`)
+      }
+    }
     this.jobs.set(input.assignmentId, id)
     return id
   }
