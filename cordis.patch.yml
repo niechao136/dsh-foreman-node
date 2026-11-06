@@ -1,0 +1,5 @@
+﻿# dsh-foreman-node bundle patch: the device side only. It carries no stateDir,
+# locks no database and opens no listener; it dials out to the hub.
+- insert:
+    - id: dsh-foreman-node
+      name: 'dsh-foreman-node'
