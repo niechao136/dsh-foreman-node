@@ -1,22 +1,40 @@
 {
   "name": "dsh-foreman-node",
   "version": "0.1.0",
-  "private": true,
   "description": "Device side of dsh-foreman: connects out to a foreman hub, takes a job into a local DSH session, reports back. No ledger, no policy, no database.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
-    ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" },
-    "./protocol": { "types": "./lib/protocol.d.ts", "default": "./lib/protocol.js" },
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./protocol": {
+      "types": "./lib/protocol.d.ts",
+      "default": "./lib/protocol.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "src", "cordis.patch.yml", "README.md", "LICENSE"],
-  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "files": [
+    "lib",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "engines": { "dsh": "^0.2.1-alpha.2" }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": "^0.2.1-alpha.2"
+    }
   },
   "scripts": {
     "build": "tsdown",
@@ -56,8 +74,23 @@
   },
   "license": "MIT",
   "author": "niechao136",
-  "repository": { "type": "git", "url": "git+https://github.com/niechao136/dsh-foreman-node.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/niechao136/dsh-foreman-node.git"
+  },
   "homepage": "https://github.com/niechao136/dsh-foreman-node#readme",
-  "bugs": { "url": "https://github.com/niechao136/dsh-foreman-node/issues" },
-  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "node", "worker"]
+  "bugs": {
+    "url": "https://github.com/niechao136/dsh-foreman-node/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "foreman",
+    "worker",
+    "device"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }
