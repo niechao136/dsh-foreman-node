@@ -27,7 +27,33 @@
 
 ## 状态
 
-**早期开发中。** 协议已落地并有测试，连接、接单、回报工具还在实现中。
+**早期开发中。** 协议、连接、接单与回报工具都已落地并有测试（14 项）。
+
+## 装上去
+
+```yaml
+# 本机 profile 的 cordis.patch.yml
+- id: dsh-foreman-node
+  config:
+    url: wss://foreman.example.com     # 主 loop 的稳定域名（隧道后面）
+    deviceId: laptop                   # 主 loop 上 scripts/add-device.mjs 登记的那个 id
+    token: <登记时打印的那一枚>
+    roots:
+      - project: shop
+        path: 'D:\工作\shop'            # 本机自己的绝对路径，原样写
+```
+
+重启本机的 DSH 即可。主 loop 不用重启——设备表在主 loop 的数据库里，不在它的插件配置里。
+
+## 接单时发生什么
+
+1. 收到 `assign` → 在帧里给的目录建（或复用）会话 `job-<assignmentId>`。
+2. 任务文本作为一条用户消息投进去，`requestId` 幂等：重投不会产生第二条。
+3. 会话挂上 `foreman_report` 工具，模型用它报 `progress` / `ready` / `blocked` / `failed`。
+4. 每次投递成功回一帧 `accepted`，主 loop 才把这张 assignment 记为 started。
+
+**权限是 `workspace-write`**，不是主 loop 自己用的 `danger-full-access`：笔记本前没人，弹审批等于卡死。
+需要越界时设备不弹窗，而是报 `blocked`，由人决定放宽 root 还是换设备。
 
 ## 协议
 
