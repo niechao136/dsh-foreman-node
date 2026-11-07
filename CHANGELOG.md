@@ -1,7 +1,21 @@
-# Changelog
+## 0.1.1 — 2026-11-07
 
-本包是 [`dsh-foreman`](https://www.npmjs.com/package/dsh-foreman) 的设备侧，单独发版，
-但**协议与 hub 版本绑定**：两侧协议版本不一致时，握手就拒绝并给出可读原因。
+### 修复：装上去就把整个 profile 弄成「异常」
+
+设备包一进 profile 的 `bundles`，它的 patch 就会插入 `dsh-foreman-node` 这一行，
+而这一行**还没有任何 config**——`0.1.0` 的 schema 把 `url` / `deviceId` / `token` 都写成 `.required()`，
+于是激活直接失败：
+
+```
+invalid config:
+  - $.url missing required value (at url)
+```
+
+整个 profile 因此显示为异常，而不是「这个设备还没配好」。
+
+现在这三项都有空字符串默认值，`apply` 在缺值时**干净地不激活**，只记一行说明缺哪几项、
+去哪儿填，profile 保持健康。值填齐后才开始拨号。
+只有空白的值也算缺——否则设备会一直拨一个空地址，看起来只是离线。
 
 ## 0.1.0 — 2026-11-07
 

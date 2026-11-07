@@ -186,11 +186,11 @@ interface NodeRoot {
 }
 /** What the `dsh-foreman-node` entry in a profile's patch configures. */
 interface NodeConfig {
-  /** The hub's stable address; the device dials out to it. */
+  /** The hub's stable address; the device dials out to it. Blank until someone fills it in. */
   url: string;
-  /** This device's id, as registered on the hub with `Devices.add`. */
+  /** This device's id, as registered on the hub with `Devices.add`. Blank until someone fills it in. */
   deviceId: string;
-  /** This device's token; sent in the hello and nowhere else. */
+  /** This device's token; sent in the hello and nowhere else. Blank until someone fills it in. */
   token: string;
   /** The projects this device can work on. */
   roots: NodeRoot[];
@@ -202,18 +202,34 @@ interface NodeConfig {
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
  *
+ * Everything is optional on purpose. A bundle patch inserts this row the moment the package is added to a profile,
+ * so `apply` runs before anyone has filled the values in — and a schema that demanded them would turn the whole
+ * profile red with "invalid config" on a fresh install. `apply` treats a blank address as "not configured yet":
+ * it says what is missing and stops, instead of dialling nowhere or refusing to activate.
+ *
  * The annotation names the schema type through the global `Schemastery` namespace rather than letting it be inferred:
  * an inferred type here names a `cosmokit` symbol the emitted declaration cannot reference portably.
  */
 declare const Config: Schemastery<NodeConfig>;
+/**
+ * What this configuration still needs before the device can dial its hub, or undefined when it is complete.
+ *
+ * A missing value is reported by name so an operator can fill it in without reading the source; a value that is only
+ * whitespace counts as missing, because a device that dials a blank address retries forever and looks merely offline.
+ */
+declare function missingConfiguration(config: NodeConfig): string | undefined;
 declare const name = "dsh-foreman-node";
 /** DSH services a job needs; all are the host's own, and none is a foreman one. */
 declare const inject: string[];
 /**
  * Start the device.
  *
+ * A package that has just been installed has its row in the profile patch with no values in it yet. Activating
+ * cleanly and saying what is still missing keeps the whole profile healthy; throwing here is what made a fresh
+ * install report the profile as broken.
+ *
  * The plugin returns once the connection is attempted, not once it succeeds: a device must boot and stay usable
  * while its hub is unreachable, and the client keeps retrying in the background.
  */
 declare function apply(ctx: Context, config: NodeConfig): Promise<void>;
-export { Config, type Frame, type FrameAttachment, JobSessions, NodeClient, NodeConfig, NodeRoot, REPORT_STATES, type Root, VERSION, apply, foremanReportTool, inject, name };
+export { Config, type Frame, type FrameAttachment, JobSessions, NodeClient, NodeConfig, NodeRoot, REPORT_STATES, type Root, VERSION, apply, foremanReportTool, inject, missingConfiguration, name };

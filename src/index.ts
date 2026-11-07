@@ -24,11 +24,11 @@ export interface NodeRoot { project: string; path: string }
 
 /** What the `dsh-foreman-node` entry in a profile's patch configures. */
 export interface NodeConfig {
-  /** The hub's stable address; the device dials out to it. */
+  /** The hub's stable address; the device dials out to it. Blank until someone fills it in. */
   url: string
-  /** This device's id, as registered on the hub with `Devices.add`. */
+  /** This device's id, as registered on the hub with `Devices.add`. Blank until someone fills it in. */
   deviceId: string
-  /** This device's token; sent in the hello and nowhere else. */
+  /** This device's token; sent in the hello and nowhere else. Blank until someone fills it in. */
   token: string
   /** The projects this device can work on. */
   roots: NodeRoot[]
@@ -41,18 +41,39 @@ export interface NodeConfig {
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
  *
+ * Everything is optional on purpose. A bundle patch inserts this row the moment the package is added to a profile,
+ * so `apply` runs before anyone has filled the values in — and a schema that demanded them would turn the whole
+ * profile red with "invalid config" on a fresh install. `apply` treats a blank address as "not configured yet":
+ * it says what is missing and stops, instead of dialling nowhere or refusing to activate.
+ *
  * The annotation names the schema type through the global `Schemastery` namespace rather than letting it be inferred:
  * an inferred type here names a `cosmokit` symbol the emitted declaration cannot reference portably.
  */
 export const Config: Schemastery<NodeConfig> = s.object({
-  url: s.string().required().description('The hub\'s address, such as wss://foreman.example.com. The device dials out to it.'),
-  deviceId: s.string().required().description('This device\'s id, as registered on the hub with `Devices.add`.'),
-  token: s.string().required().role('secret').description('This device\'s token; it is sent in the hello frame and nowhere else.'),
+  url: s.string().default('').description('The hub\'s address, such as wss://foreman.example.com. The device dials out to it.'),
+  deviceId: s.string().default('').description('This device\'s id, as registered on the hub with `Devices.add`.'),
+  token: s.string().default('').role('secret').description('This device\'s token; it is sent in the hello frame and nowhere else.'),
   roots: s.array(s.object({ project: s.string().required(), path: s.string().required() })).default([])
     .description('Projects this device can work on: a logical name and this machine\'s own absolute path, kept verbatim.'),
   heartbeatMs: s.natural().default(15_000).description('How often to tell the hub this device is alive, in milliseconds.'),
   reconnectMs: s.natural().default(1_000).description('Delay before the first reconnect attempt, in milliseconds.'),
 })
+
+/**
+ * What this configuration still needs before the device can dial its hub, or undefined when it is complete.
+ *
+ * A missing value is reported by name so an operator can fill it in without reading the source; a value that is only
+ * whitespace counts as missing, because a device that dials a blank address retries forever and looks merely offline.
+ */
+export function missingConfiguration(config: NodeConfig): string | undefined {
+  const missing: string[] = []
+  if (config.url.trim() === '') missing.push('url')
+  if (config.deviceId.trim() === '') missing.push('deviceId')
+  if (config.token.trim() === '') missing.push('token')
+  if (missing.length === 0) return undefined
+  return `dsh-foreman-node is not configured yet: ${missing.join(', ')} ` +
+    `missing. Set them on the dsh-foreman-node row in the profile patch (the hub prints the token when you register the device).`
+}
 
 export const name = 'dsh-foreman-node'
 /** DSH services a job needs; all are the host's own, and none is a foreman one. */
@@ -61,10 +82,19 @@ export const inject = ['sessionController', 'sessionPersistence', 'workspaceRegi
 /**
  * Start the device.
  *
+ * A package that has just been installed has its row in the profile patch with no values in it yet. Activating
+ * cleanly and saying what is still missing keeps the whole profile healthy; throwing here is what made a fresh
+ * install report the profile as broken.
+ *
  * The plugin returns once the connection is attempted, not once it succeeds: a device must boot and stay usable
  * while its hub is unreachable, and the client keeps retrying in the background.
  */
 export async function apply(ctx: Context, config: NodeConfig): Promise<void> {
+  const missing = missingConfiguration(config)
+  if (missing !== undefined) {
+    ctx.logger.info('%s', missing)
+    return
+  }
   const jobs = new JobSessions(ctx)
   const client = new NodeClient({
     url: config.url,

@@ -1,7 +1,8 @@
-import { expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { JobSessions } from '../src/session.ts'
 import { foremanReportTool } from '../src/report-tool.ts'
 import { parseFrame } from '../src/protocol.ts'
+import { Config, missingConfiguration } from '../src/index.ts'
 
 /**
  * A host that behaves like DSH for the parts a job touches: `resolveAgent` fails until `create` has run, `create`
@@ -102,4 +103,31 @@ it('offers no dropped option to the model at all', () => {
 it('round-trips a frame the way the hub will read it', () => {
   const frame = { v: 1, type: 'report' as const, frameId: 'f1', assignmentId: 'a1', state: 'ready' as const, summary: 'ok' }
   expect(parseFrame(JSON.stringify(frame))).toEqual(frame)
+})
+
+/**
+ * The device package is installed on a machine that may not have a hub yet. A bundle patch inserts the row the
+ * moment the package is added to a profile, so `apply` runs with whatever config exists — including none at all.
+ * Refusing to activate there turns the whole profile red with "invalid config", which is what a fresh install saw.
+ */
+describe('a device with no configuration yet', () => {
+  it('does not require a hub address, a device id or a token to activate', () => {
+    const parsed = Config({} as never)
+    expect(parsed.url).toBe('')
+    expect(parsed.deviceId).toBe('')
+    expect(parsed.token).toBe('')
+  })
+
+  it('says what is missing, and names the command that fills it in', () => {
+    expect(missingConfiguration(Config({} as never))).toMatch(/dsh-foreman-node is not configured yet/)
+    expect(missingConfiguration(Config({} as never))).toMatch(/url/)
+  })
+
+  it('reports nothing missing once the three values are there', () => {
+    expect(missingConfiguration(Config({ url: 'wss://hub.example.com', deviceId: 'laptop', token: 'tok' } as never))).toBeUndefined()
+  })
+
+  it('still treats a blank address as unconfigured, so a half-filled row does not dial nowhere', () => {
+    expect(missingConfiguration(Config({ url: '   ', deviceId: 'laptop', token: 'tok' } as never))).toMatch(/url/)
+  })
 })
