@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { JobSessions } from '../src/session.ts'
 import { foremanReportTool } from '../src/report-tool.ts'
 import { parseFrame } from '../src/protocol.ts'
-import { Config, missingConfiguration } from '../src/index.ts'
+import { Config, hubUrlOf, missingConfiguration } from '../src/index.ts'
 
 /**
  * A host that behaves like DSH for the parts a job touches: `resolveAgent` fails until `create` has run, `create`
@@ -129,5 +129,38 @@ describe('a device with no configuration yet', () => {
 
   it('still treats a blank address as unconfigured, so a half-filled row does not dial nowhere', () => {
     expect(missingConfiguration(Config({ url: '   ', deviceId: 'laptop', token: 'tok' } as never))).toMatch(/url/)
+  })
+})
+
+/**
+ * The address the device dials is not always the one written in `url`: with the tunnel on, the device reaches the hub
+ * through a port it listens on itself, so dialling `url` would go straight past the tunnel. These four cases pin which
+ * address wins and what still has to be filled in for each.
+ */
+describe('the address the device dials', () => {
+  /** A full config from the schema's own defaults, so a field added later cannot make this helper stale. */
+  const config = (overrides: Record<string, unknown> = {}) =>
+    Config({ enabled: false, ...overrides } as never) as unknown as ReturnType<typeof Config> & { ssh: Record<string, unknown> }
+
+  it('derives the tunnel address from the local port when the tunnel is on', () => {
+    const parsed = Config({ url: 'wss://ignored.example', ssh: { enabled: true, localPort: 8790 } } as never)
+    expect(hubUrlOf(parsed)).toBe('ws://127.0.0.1:8790')
+  })
+
+  it('uses the configured address when the tunnel is off', () => {
+    const parsed = Config({ url: 'wss://foreman.example', ssh: { enabled: false } } as never)
+    expect(hubUrlOf(parsed)).toBe('wss://foreman.example')
+  })
+
+  it('reports a missing address only when the tunnel is off', () => {
+    expect(missingConfiguration(Config({ url: '', ssh: { enabled: false } } as never))).toMatch(/url/)
+    expect(missingConfiguration(Config({ url: '', ssh: { enabled: true } } as never))).not.toMatch(/url/)
+  })
+
+  it('still requires a host, a user and a key when the tunnel is on', () => {
+    const missing = missingConfiguration(Config({ url: '', ssh: { enabled: true, host: '', user: '', keyPath: '' } } as never))
+    expect(missing).toMatch(/ssh\.host/)
+    expect(missing).toMatch(/ssh\.user/)
+    expect(missing).toMatch(/ssh\.keyPath/)
   })
 })

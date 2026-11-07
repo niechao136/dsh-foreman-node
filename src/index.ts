@@ -22,6 +22,30 @@ export const VERSION = '0.1.0'
 /** One project this device can work on: the hub's logical name and this machine's own absolute path. */
 export interface NodeRoot { project: string; path: string }
 
+/**
+ * How the device reaches a hub it cannot reach directly.
+ *
+ * The hub listens on loopback only — a deliberate constraint, because the ledger is the one thing worth protecting —
+ * so a device on another machine reaches it through a tunnel. With `enabled` the device opens that tunnel itself and
+ * dials its own end of it; `url` is then unused, not overridden, so switching back to a direct address restores it.
+ */
+export interface SshConfig {
+  /** Open a tunnel to the hub instead of dialling `url` directly. */
+  enabled: boolean
+  /** The hub machine: an address or a `~/.ssh/config` alias. */
+  host: string
+  /** The hub machine's SSH port. */
+  port: number
+  /** The SSH user on the hub machine. */
+  user: string
+  /** The private key this device authenticates with. The configuration page lists these from `~/.ssh`. */
+  keyPath: string
+  /** The port the hub listens on, on the hub machine. */
+  remotePort: number
+  /** The local port the tunnel listens on; the device dials this. */
+  localPort: number
+}
+
 /** What the `dsh-foreman-node` entry in a profile's patch configures. */
 export interface NodeConfig {
   /** The hub's stable address; the device dials out to it. Blank until someone fills it in. */
@@ -36,6 +60,8 @@ export interface NodeConfig {
   heartbeatMs: number
   /** Delay before the first reconnect attempt, in milliseconds. */
   reconnectMs: number
+  /** How to reach a hub that is not directly reachable. */
+  ssh: SshConfig
 }
 
 /**
@@ -57,6 +83,18 @@ export const Config: Schemastery<NodeConfig> = s.object({
     .description('Projects this device can work on: a logical name and this machine\'s own absolute path, kept verbatim.'),
   heartbeatMs: s.natural().default(15_000).description('How often to tell the hub this device is alive, in milliseconds.'),
   reconnectMs: s.natural().default(1_000).description('Delay before the first reconnect attempt, in milliseconds.'),
+  // Every field carries a default, and the object itself does too: a `cordis.patch.yml` written before this block
+  // existed has no `ssh` key, and a schema that demanded one would report the whole profile invalid on upgrade.
+  ssh: s.object({
+    enabled: s.boolean().default(false).description('Reach the hub through an SSH tunnel this device starts itself.'),
+    host: s.string().default('').description('The hub machine, such as 203.0.113.10 or its ~/.ssh/config alias.'),
+    port: s.natural().max(65535).default(22).description('The hub machine\'s SSH port.'),
+    user: s.string().default('').description('The SSH user on the hub machine.'),
+    keyPath: s.string().default('').description('The private key this device authenticates with; the page lists these from ~/.ssh.'),
+    remotePort: s.natural().max(65535).default(8790).description('The port the hub listens on, on the hub machine.'),
+    localPort: s.natural().max(65535).default(8790).description('The local port the tunnel listens on; the device dials this.'),
+  }).default({ enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 })
+    .description('How to reach the hub when it is not directly reachable: a tunnel this device opens and keeps open.'),
 })
 
 /**
@@ -65,9 +103,25 @@ export const Config: Schemastery<NodeConfig> = s.object({
  * A missing value is reported by name so an operator can fill it in without reading the source; a value that is only
  * whitespace counts as missing, because a device that dials a blank address retries forever and looks merely offline.
  */
+/**
+ * The address this device dials.
+ *
+ * With the tunnel on, that is the local end of it: `url` names the hub at its own address, which the tunnel exists to
+ * make reachable, so dialling `url` would bypass the tunnel entirely and look like an offline device. Keeping the two
+ * cases in one function is what stops `apply` from picking the wrong one.
+ */
+export function hubUrlOf(config: NodeConfig): string {
+  return config.ssh.enabled ? `ws://127.0.0.1:${config.ssh.localPort}` : config.url
+}
+
 export function missingConfiguration(config: NodeConfig): string | undefined {
   const missing: string[] = []
-  if (config.url.trim() === '') missing.push('url')
+  // The address is only required when there is no tunnel: with one, the device dials its local end and `url` is unused.
+  if (config.ssh.enabled) {
+    if (config.ssh.host.trim() === '') missing.push('ssh.host')
+    if (config.ssh.user.trim() === '') missing.push('ssh.user')
+    if (config.ssh.keyPath.trim() === '') missing.push('ssh.keyPath')
+  } else if (config.url.trim() === '') missing.push('url')
   if (config.deviceId.trim() === '') missing.push('deviceId')
   if (config.token.trim() === '') missing.push('token')
   if (missing.length === 0) return undefined
