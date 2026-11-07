@@ -12,7 +12,11 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-tools'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { NodeClient } from './client.ts'
+import { registerNodeRoutes, type RouteHost } from './routes.ts'
+import { Tunnel } from './tunnel.ts'
 import { JobSessions } from './session.ts'
 import type { Frame } from './protocol.ts'
 
@@ -144,6 +148,15 @@ export const inject = ['sessionController', 'sessionPersistence', 'workspaceRegi
  * while its hub is unreachable, and the client keeps retrying in the background.
  */
 export async function apply(ctx: Context, config: NodeConfig): Promise<void> {
+  // The configuration page has to work on a device that is not configured yet — that is precisely when someone opens
+  // it — so the routes go up before the check below, not after it. `webServer` is injected optionally rather than
+  // listed in `inject`: a headless or CLI DSH has no web server and must still take work, losing only the page.
+  ctx.inject(['webServer'], child => {
+    // The service shape is declared locally rather than imported from `@deepseek-ai/dsh-host-webserver`: the device
+    // package stays thin, and this plugin needs two members of that service, not its whole surface.
+    const host = (child as unknown as { webServer: RouteHost }).webServer
+    child.effect(() => registerNodeRoutes(host, sshDirectory()))
+  })
   const missing = missingConfiguration(config)
   if (missing !== undefined) {
     ctx.logger.info('%s', missing)
@@ -151,7 +164,7 @@ export async function apply(ctx: Context, config: NodeConfig): Promise<void> {
   }
   const jobs = new JobSessions(ctx)
   const client = new NodeClient({
-    url: config.url,
+    url: hubUrlOf(config),
     deviceId: config.deviceId,
     token: config.token,
     version: VERSION,
@@ -162,9 +175,24 @@ export async function apply(ctx: Context, config: NodeConfig): Promise<void> {
     log: text => ctx.logger.warn('%s', text),
     onFrame: frame => { void receive(ctx, jobs, client, frame) },
   })
-  client.start()
-  ctx.effect(() => () => { client.stop() })
-  ctx.logger.info('dsh-foreman-node %s is dialling %s as %s', VERSION, config.url, config.deviceId)
+  // With a tunnel, the client waits for the local port to answer before dialling it: a client that starts early spends
+  // its first attempts on a port nothing is listening on, which reads in the log like the hub being down.
+  const tunnel = config.ssh.enabled
+    ? new Tunnel({ ssh: config.ssh, log: text => ctx.logger.warn('%s', text),
+      onState: (state, failure) => {
+        ctx.logger.info('dsh-foreman-node tunnel: %s', failure === undefined ? state : `${state} (${failure})`)
+        if (state === 'connected') client.start()
+      } })
+    : undefined
+  if (tunnel === undefined) client.start()
+  else tunnel.start()
+  ctx.effect(() => () => { tunnel?.stop(); client.stop() })
+  ctx.logger.info('dsh-foreman-node %s is dialling %s as %s', VERSION, hubUrlOf(config), config.deviceId)
+}
+
+/** The directory the key list reads; `~/.ssh` on a machine where the current user is the one configuring it. */
+export function sshDirectory(): string {
+  return join(homedir(), '.ssh')
 }
 
 /**
@@ -208,6 +236,9 @@ async function receive(ctx: Context, jobs: JobSessions, client: NodeClient, fram
 }
 
 export { NodeClient } from './client.ts'
+export { Tunnel, tunnelArgs } from './tunnel.ts'
+export { listKeys } from './keys.ts'
+export { registerNodeRoutes, testArgs } from './routes.ts'
 export { JobSessions } from './session.ts'
 export { foremanReportTool, REPORT_STATES } from './report-tool.ts'
 export type { Frame, Root, FrameAttachment } from './protocol.ts'

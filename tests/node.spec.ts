@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { JobSessions } from '../src/session.ts'
 import { foremanReportTool } from '../src/report-tool.ts'
 import { parseFrame } from '../src/protocol.ts'
-import { Config, hubUrlOf, missingConfiguration } from '../src/index.ts'
+import { apply, Config, hubUrlOf, missingConfiguration } from '../src/index.ts'
 
 /**
  * A host that behaves like DSH for the parts a job touches: `resolveAgent` fails until `create` has run, `create`
@@ -162,5 +162,66 @@ describe('the address the device dials', () => {
     expect(missing).toMatch(/ssh\.host/)
     expect(missing).toMatch(/ssh\.user/)
     expect(missing).toMatch(/ssh\.keyPath/)
+  })
+})
+
+/**
+ * A host for `apply`: enough of a Cordis context to record what the plugin asks for, plus whatever services the test
+ * wants present. `inject` runs its callback only when the named service is there, which is exactly the behaviour the
+ * device relies on to stay alive without a web server.
+ */
+function hostFor(services: Record<string, unknown> = {}) {
+  const registered: string[] = []
+  const effects: (() => void)[] = []
+  const injected: string[][] = []
+  const host = {
+    logger: { info: vi.fn(), warn: vi.fn() },
+    effect: (callback: () => () => void) => { effects.push(callback()) },
+    inject: (names: string[], callback: (child: unknown) => void) => {
+      injected.push(names)
+      if (names.every(name => services[name] !== undefined)) {
+        callback({ ...host, ...Object.fromEntries(names.map(name => [name, services[name]])) })
+      }
+    },
+    ...services,
+  }
+  // The web server service is passed through so `registerNodeRoutes` sees a port and a register function.
+  if (services['webServer'] !== undefined) {
+    (services['webServer'] as { register: (route: { path: string }) => () => void }).register = (route) => {
+      registered.push(route.path)
+      return () => {}
+    }
+  }
+  const disposers = () => { for (const dispose of effects) dispose() }
+  return { ctx: host as never, registered, injected, disposers }
+}
+
+describe('starting the device', () => {
+  it('registers its routes even when the device has nothing configured yet', async () => {
+    const { ctx, registered } = hostFor({ webServer: { port: 3088 } })
+    await apply(ctx, Config({ url: '', deviceId: '', token: '' } as never))
+    // A fresh install opens the page to become configured, so the page must answer before there is any config.
+    expect(registered).toEqual(['/foreman-node'])
+  })
+
+  it('asks for the web server optionally rather than requiring it', async () => {
+    const { ctx, injected, registered } = hostFor({})
+    await apply(ctx, Config({ url: 'ws://hub', deviceId: 'd', token: 't' } as never))
+    expect(injected).toEqual([['webServer']])
+    // Without a web server there is no page, but the device itself is unaffected.
+    expect(registered).toEqual([])
+  })
+
+  it('dials the tunnel address rather than the configured one when the tunnel is on', async () => {
+    const { ctx } = hostFor({})
+    // A blank host/user/key is refused before dialling, so this reads the address the log reports.
+    const config = Config({ url: 'wss://ignored.example', deviceId: 'd', token: 't',
+      ssh: { enabled: true, host: 'h', user: 'u', keyPath: '/k', localPort: 8790 } } as never)
+    await apply(ctx, config)
+    // The plugin logs `'… dialling %s as %s', version, url, id`, so the address is the third argument.
+    const info = (ctx as unknown as { logger: { info: ReturnType<typeof vi.fn> } }).logger.info
+    const dialled = info.mock.calls.map(call => call[2]).filter(value => typeof value === 'string')
+    expect(dialled).toContain('ws://127.0.0.1:8790')
+    expect(dialled).not.toContain('wss://ignored.example')
   })
 })
