@@ -172,14 +172,20 @@ export class Tunnel {
     void this.waitReady(generation, () => settled, () => { settled = true })
   }
 
-  /** Poll the local port until it answers or the attempt is superseded; a first answer means the forward works. */
+  /**
+   * Poll the local port until it answers or the attempt is superseded; a first answer means the forward works.
+   *
+   * Reaching `connected` deliberately does NOT mark the attempt settled. The process is still running, and it is
+   * exactly the exit that follows a working tunnel — a dropped link, a restarted hub — that has to reach `fail` and
+   * schedule a retry. Marking it settled here would leave a device that connects once and then silently stops
+   * taking work, which is the hardest failure to notice.
+   */
   private async waitReady(generation: number, settled: () => boolean, markSettled: () => void): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_MS
     while (Date.now() < deadline) {
       if (generation !== this.generation || settled()) return
       if (await this.probe(this.input.ssh.localPort)) {
         if (generation !== this.generation || settled()) return
-        markSettled()
         // The forward works, so the retry delay starts over: one good minute should not be followed by a long wait.
         this.retryMs = this.input.retryMs ?? 1_000
         this.lastFailure = undefined

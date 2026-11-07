@@ -16,6 +16,11 @@ function fakeChild(exit?: { code: number | null; stderr?: string }): TunnelChild
   const stderrListeners: ((chunk: Buffer) => void)[] = []
   const child = {
     killed: false,
+    /** Fires one `exit` after the tunnel was already working, which is the case this fake exists to model. */
+    emitExit(code: number | null, stderrText?: string) {
+      if (stderrText !== undefined) for (const listener of stderrListeners) listener(Buffer.from(stderrText))
+      for (const listener of listeners) listener(code)
+    },
     kill() { child.killed = true; return true },
     on(event: string, listener: never) {
       if (event === 'exit') listeners.push(listener)
@@ -112,6 +117,23 @@ describe('a tunnel that fails', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(tunnel.state()).toBe('connecting')
     tunnel.stop()
+  })
+})
+
+describe('a tunnel that worked and then died', () => {
+  it('notices the exit and retries, instead of staying silently connected', async () => {
+    // The worst failure this class can have: it reports connected once, the link drops, and nothing ever notices.
+    // A device in that state takes no work and looks online, so this case is pinned rather than left to luck.
+    let spawns = 0
+    const children: (TunnelChild & { killed: boolean })[] = []
+    const tunnel = new Tunnel({ ssh: ssh(), retryMs: 5, log: () => {}, probe: async () => true,
+      spawn: () => { spawns++; const child = fakeChild(); children.push(child); return child } })
+    tunnel.start()
+    await vi.waitFor(() => expect(tunnel.state()).toBe('connected'))
+    // The link drops after the tunnel was working.
+    children[0]!.emitExit(255, 'Connection reset by peer')
+    await vi.waitFor(() => expect(tunnel.state()).toBe('failed'))
+    await vi.waitFor(() => expect(spawns).toBeGreaterThan(1))
   })
 })
 
