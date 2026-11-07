@@ -66,19 +66,33 @@ export function testMessage(result: TestResult): string {
   return result.output.trim() === '' ? 'refused' : result.output
 }
 
+/** One field write, in the shape DSH's configuration form takes. */
+export interface Edit { op: 'set'; path: (string | number)[]; value: unknown }
+
 /**
- * The values the page writes back, trimmed so a stray space does not become part of a token.
+ * The edits the page sends, one `set` per field it actually holds.
  *
- * `token` is included only when the page actually holds one. A secret field is stripped from everything the host
- * sends, so `draft.token` is normally undefined; writing that back as `''` would replace the stored token with an
- * empty string and leave the device unable to authenticate for good.
+ * This is deliberately not one `set` at the root. A root write replaces the whole section, and the page never
+ * receives the token — the host strips it as a secret — so a root write erased the stored token on every save and
+ * left the device unable to authenticate. It did exactly that on a real machine: one save took the device offline.
+ *
+ * Writing only the fields this page holds leaves every other key untouched, the token included. An empty token box
+ * means "keep whatever is stored", and that is one value the page cannot read at all.
  */
-export function configOf(draft: NodeConfig): Record<string, unknown> {
+export function editsOf(draft: NodeConfig): Edit[] {
+  const edits: Edit[] = [
+    { op: 'set', path: ['url'], value: draft.url.trim() },
+    { op: 'set', path: ['deviceId'], value: draft.deviceId.trim() },
+    { op: 'set', path: ['roots'], value: draft.roots.map(root => ({ project: root.project.trim(), path: root.path.trim() })) },
+  ]
+  // The ssh block is written field by field: a whole-block set would replace its default with the page's view.
+  for (const key of ['enabled', 'host', 'port', 'user', 'keyPath', 'remotePort', 'localPort'] as const) {
+    const value = draft.ssh[key]
+    edits.push({ op: 'set', path: ['ssh', key], value: typeof value === 'string' ? value.trim() : value })
+  }
   const token = typeof draft.token === 'string' ? draft.token.trim() : ''
-  return { url: draft.url.trim(), deviceId: draft.deviceId.trim(),
-    ...token === '' ? {} : { token },
-    roots: draft.roots.map(root => ({ project: root.project.trim(), path: root.path.trim() })),
-    ssh: { ...draft.ssh, host: draft.ssh.host.trim(), user: draft.ssh.user.trim(), keyPath: draft.ssh.keyPath.trim() } }
+  if (token !== '') edits.push({ op: 'set', path: ['token'], value: token })
+  return edits
 }
 
 /** The SSH block a fresh page starts from, matching the schema's defaults so an untouched field is not a change. */

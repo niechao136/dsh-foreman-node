@@ -1,7 +1,7 @@
 /** What the device's configuration page decides, without a DOM. */
 import { expect, it } from 'vitest'
 import type { NodeConfig } from '../src/index.ts'
-import { addressPreview, configOf, DEFAULT_SSH, emptyFields, keyLabel, needsToken, testMessage } from '../src/client/page-state.ts'
+import { addressPreview, DEFAULT_SSH, editsOf, emptyFields, keyLabel, needsToken, testMessage } from '../src/client/page-state.ts'
 
 const config = (overrides: Partial<NodeConfig> = {}): NodeConfig =>
   ({ url: '', deviceId: '', token: '', roots: [], heartbeatMs: 15_000, reconnectMs: 1_000, ssh: { ...DEFAULT_SSH }, ...overrides }) as NodeConfig
@@ -26,10 +26,27 @@ it('names the fields still empty, and stops asking for an address once a tunnel 
   expect(emptyFields(config({ url: 'ws://h', deviceId: 'd' }), true)).toEqual([])
 })
 
-it('writes no token at all when the page holds none, so the stored one survives', () => {
-  // A secret never reaches the page. Writing `token: ''` back would replace the stored token with nothing.
-  const written = configOf(config({ token: undefined as never }))
-  expect(written).not.toHaveProperty('token')
+it('never writes the token back when the page holds none, so the stored one survives', () => {
+  // A secret never reaches the page. Sending `token: ''` would erase the stored one; sending nothing keeps it.
+  const paths = editsOf(config({ token: undefined as never })).map(edit => edit.path.join('.'))
+  expect(paths).not.toContain('token')
+})
+
+it('writes one edit per field rather than replacing the whole section', () => {
+  // A root `set` replaces everything, so the token the page never received would be dropped on every save.
+  // That is exactly what happened on a real machine: the device went offline after one save.
+  const edits = editsOf(config())
+  expect(edits.every(edit => edit.path.length > 0)).toBe(true)
+  const paths = edits.map(edit => edit.path.join('.'))
+  expect(paths).toContain('url')
+  expect(paths).toContain('ssh.host')
+  expect(paths).toContain('roots')
+})
+
+it('sends a typed token, and only then', () => {
+  const typed = editsOf(config({ token: 'new-token' })).find(edit => edit.path.join('.') === 'token')
+  expect(typed?.value).toBe('new-token')
+  expect(editsOf(config({ token: '' })).some(edit => edit.path.join('.') === 'token')).toBe(false)
 })
 
 it('asks for a token only when it is not a string at all', () => {
@@ -61,13 +78,22 @@ it('falls back to a word when ssh said nothing at all', () => {
 })
 
 it('writes trimmed values, so a stray space cannot become part of a token', () => {
-  const written = configOf(config({ url: ' ws://h ', deviceId: ' d ', token: ' t ', roots: [{ project: ' shop ', path: ' /w ' }],
+  const edits = editsOf(config({ url: ' ws://h ', deviceId: ' d ', token: ' t ', roots: [{ project: ' shop ', path: ' /w ' }],
     ssh: { ...DEFAULT_SSH, enabled: true, host: ' h ', user: ' u ', keyPath: ' /k ' } }))
-  expect(written).toMatchObject({ url: 'ws://h', deviceId: 'd', token: 't', roots: [{ project: 'shop', path: '/w' }] })
-  expect(written.ssh).toMatchObject({ host: 'h', user: 'u', keyPath: '/k' })
+  const value = (path: string) => edits.find(edit => edit.path.join('.') === path)?.value
+  expect(value('url')).toBe('ws://h')
+  expect(value('deviceId')).toBe('d')
+  expect(value('token')).toBe('t')
+  expect(value('roots')).toEqual([{ project: 'shop', path: '/w' }])
+  expect(value('ssh.host')).toBe('h')
+  expect(value('ssh.user')).toBe('u')
+  expect(value('ssh.keyPath')).toBe('/k')
 })
 
 it('keeps the ports as numbers, which the schema demands', () => {
-  const written = configOf(config({ ssh: { ...DEFAULT_SSH, port: 2222, localPort: 8791, remotePort: 8790 } })) as { ssh: Record<string, unknown> }
-  expect(written.ssh).toMatchObject({ port: 2222, localPort: 8791, remotePort: 8790 })
+  const edits = editsOf(config({ ssh: { ...DEFAULT_SSH, port: 2222, localPort: 8791, remotePort: 8790 } }))
+  const value = (path: string) => edits.find(edit => edit.path.join('.') === path)?.value
+  expect(value('ssh.port')).toBe(2222)
+  expect(value('ssh.localPort')).toBe(8791)
+  expect(value('ssh.remotePort')).toBe(8790)
 })

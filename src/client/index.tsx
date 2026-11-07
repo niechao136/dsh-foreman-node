@@ -14,7 +14,7 @@ import type { ConfigPageForm, PluginConfigViewProps } from '@deepseek-ai/dsh-cli
 import { configured, type NodeConfig } from '../config.ts'
 import type { SshKey } from '../keys.ts'
 import type { TestResult } from '../routes.ts'
-import { addressPreview, configOf, DEFAULT_SSH, emptyFields, keyLabel, testMessage } from './page-state.ts'
+import { addressPreview, DEFAULT_SSH, editsOf, emptyFields, keyLabel, testMessage } from './page-state.ts'
 import { en, zh } from './locales.ts'
 
 /** The prefix the device's own routes answer under. */
@@ -94,7 +94,7 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
     if (draft === undefined || form === undefined) return
     setNotice(undefined)
     try {
-      const ok = await form.mutate([{ op: 'set', path: [], value: configOf(draft) }], form.state.revision)
+      const ok = await form.mutate(editsOf(draft), form.state.revision)
       setNotice(ok ? t('saved') : t('saveFailed'))
     } catch { setNotice(t('saveFailed')) }
   }
