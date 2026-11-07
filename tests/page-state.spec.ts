@@ -1,7 +1,7 @@
 /** What the device's configuration page decides, without a DOM. */
 import { expect, it } from 'vitest'
 import type { NodeConfig } from '../src/index.ts'
-import { addressPreview, configOf, DEFAULT_SSH, emptyFields, keyLabel, testMessage } from '../src/client/page-state.ts'
+import { addressPreview, configOf, DEFAULT_SSH, emptyFields, keyLabel, needsToken, testMessage } from '../src/client/page-state.ts'
 
 const config = (overrides: Partial<NodeConfig> = {}): NodeConfig =>
   ({ url: '', deviceId: '', token: '', roots: [], heartbeatMs: 15_000, reconnectMs: 1_000, ssh: { ...DEFAULT_SSH }, ...overrides }) as NodeConfig
@@ -18,9 +18,22 @@ it('says which address will be dialled, and whether it is derived from the tunne
 })
 
 it('names the fields still empty, and stops asking for an address once a tunnel is on', () => {
-  expect(emptyFields(config())).toEqual(['url', 'deviceId', 'token'])
-  expect(emptyFields(config({ ssh: { ...DEFAULT_SSH, enabled: true } }))).toEqual(['ssh.host', 'ssh.user', 'ssh.keyPath', 'deviceId', 'token'])
-  expect(emptyFields(config({ url: 'ws://h', deviceId: 'd', token: 't' }))).toEqual([])
+  // The third argument says whether a token is already stored; a stored token is never sent to the page.
+  expect(emptyFields(config(), false)).toEqual(['url', 'deviceId', 'token'])
+  expect(emptyFields(config(), true)).toEqual(['url', 'deviceId'])
+  expect(emptyFields(config({ ssh: { ...DEFAULT_SSH, enabled: true } }), false))
+    .toEqual(['ssh.host', 'ssh.user', 'ssh.keyPath', 'deviceId', 'token'])
+  expect(emptyFields(config({ url: 'ws://h', deviceId: 'd' }), true)).toEqual([])
+})
+
+it('writes no token at all when the page holds none, so the stored one survives', () => {
+  // A secret never reaches the page. Writing `token: ''` back would replace the stored token with nothing.
+  const written = configOf(config({ token: undefined as never }))
+  expect(written).not.toHaveProperty('token')
+})
+
+it('asks for a token only when it is not a string at all', () => {
+  expect(needsToken({ token: undefined as never })).toBe(true)
 })
 
 it('names the passphrase case rather than reprinting the refusal', () => {

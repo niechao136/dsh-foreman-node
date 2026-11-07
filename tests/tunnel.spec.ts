@@ -10,6 +10,17 @@ const ssh = (overrides: Partial<SshConfig> = {}): SshConfig =>
   ({ enabled: true, host: 'hub.example', port: 22, user: 'me', keyPath: '/home/me/.ssh/id_ed25519',
     remotePort: 8790, localPort: 8790, ...overrides })
 
+/**
+ * A probe that says the port is free before the attempt spawns, then answers `after` once it is running.
+ *
+ * The pre-spawn check exists so a port already bound is not mistaken for our own forward, so a probe that simply
+ * returned true would be testing the wrong thing.
+ */
+const freeThen = (after: boolean): (() => Promise<boolean>) => {
+  let calls = 0
+  return async () => { calls++; return calls === 1 ? false : after }
+}
+
 /** A child that reports the exit the test asked for, on the next tick, so the retry path runs. */
 type FakeChild = TunnelChild & { killed: boolean; emitExit(code: number | null, stderr?: string): void }
 function fakeChild(exit?: { code: number | null; stderr?: string }): FakeChild {
@@ -54,7 +65,7 @@ describe('the ssh command the tunnel runs', () => {
 describe('a tunnel that works', () => {
   it('reaches connected only after the local port answers', async () => {
     const states: string[] = []
-    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => fakeChild(), probe: async () => true,
+    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => fakeChild(), probe: freeThen(true),
       onState: state => states.push(state) })
     tunnel.start()
     await vi.waitFor(() => expect(tunnel.state()).toBe('connected'))
@@ -62,13 +73,14 @@ describe('a tunnel that works', () => {
   })
 
   it('is not connected before the port answers', async () => {
-    let answers = false
-    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => fakeChild(), probe: async () => answers })
+    let calls = 0
+    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => fakeChild(),
+      // Call 1 is the pre-spawn check (port free), call 2 says still nothing yet is listening.
+      probe: async () => { calls++; return calls === 1 ? false : calls > 2 } })
     tunnel.start()
     // The process is up, but nothing is listening yet, so the honest state is still connecting.
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(tunnel.state()).toBe('connecting')
-    answers = true
     await vi.waitFor(() => expect(tunnel.state()).toBe('connected'))
   })
 })
@@ -127,7 +139,7 @@ describe('a tunnel that worked and then died', () => {
     // A device in that state takes no work and looks online, so this case is pinned rather than left to luck.
     let spawns = 0
     const children: FakeChild[] = []
-    const tunnel = new Tunnel({ ssh: ssh(), retryMs: 5, log: () => {}, probe: async () => true,
+    const tunnel = new Tunnel({ ssh: ssh(), retryMs: 5, log: () => {}, probe: freeThen(true),
       spawn: () => { spawns++; const child = fakeChild(); children.push(child); return child } })
     tunnel.start()
     await vi.waitFor(() => expect(tunnel.state()).toBe('connected'))
@@ -139,12 +151,40 @@ describe('a tunnel that worked and then died', () => {
 })
 
 describe('stopping', () => {
-  it('kills the child instead of leaving it running', () => {
+  it('kills the child instead of leaving it running', async () => {
     const child = fakeChild()
-    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => child, probe: async () => true })
-    tunnel.start(); tunnel.stop()
+    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => child, probe: freeThen(true) })
+    tunnel.start()
+    // `attempt` checks the port before spawning, so the child exists only after that check has resolved.
+    await vi.waitFor(() => expect(tunnel.state()).toBe('connecting'))
+    tunnel.stop()
     expect(child.killed).toBe(true)
     expect(tunnel.state()).toBe('idle')
+  })
+
+  it('escalates to SIGKILL when the process ignores SIGTERM', async () => {
+    const signals: string[] = []
+    // `killed` is set, as Node does, but no exit event ever arrives: the process ignored SIGTERM and is still alive.
+    const stubborn = { killed: false, kill(signal?: string) { signals.push(signal ?? 'SIGTERM'); return true },
+      on() { return stubborn }, stderr: { on() { return stubborn.stderr } } }
+    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => stubborn as never, probe: freeThen(true) })
+    tunnel.start()
+    await vi.waitFor(() => expect(tunnel.state()).toBe('connecting'))
+    tunnel.stop()
+    // A leaked ssh keeps the local port bound, so the next activation fails on a port it still owns.
+    // The escalation timer is unref'd (it must not keep the host alive), so this waits it out rather than
+    // relying on the event loop staying busy.
+    await new Promise(resolve => setTimeout(resolve, 2_500))
+    expect(signals[0]).toBe('SIGTERM')
+    expect(signals).toContain('SIGKILL')
+  })
+
+  it('refuses to call itself connected when the port was already taken before it spawned', async () => {
+    // The case ExitOnForwardFailure exists to surface: somebody else owns the port, so an answer there is not ours.
+    const tunnel = new Tunnel({ ssh: ssh(), spawn: () => fakeChild(), probe: async () => true, log: () => {} })
+    tunnel.start()
+    await vi.waitFor(() => expect(tunnel.state()).toBe('failed'))
+    expect(tunnel.failure()).toContain('already in use')
   })
 
   it('starts no further attempt once stopped, however many it made before', async () => {

@@ -79,11 +79,21 @@ async function body(req: IncomingMessage, maxBytes = 16 * 1024): Promise<unknown
  * do is send it *with* its own `Origin` intact, so an `Origin` that is present must be this page's. A request with no
  * `Origin` at all (a local tool, a test) is allowed and the marker still has to be there.
  */
-export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
+/** The loopback names a host header may carry; DSH's desktop build normalizes`::1` and `localhost` to each other. */
+const LOOPBACK = ['127.0.0.1', 'localhost', '::1', '[::1]']
+
+export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number, protocol = 'http:'): boolean {
   const host = req.headers.host
-  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return false
+  if (host === undefined) return false
+  // `host:port` for IPv4 and names, `[::1]:port` for a bracketed IPv6 literal.
+  const match = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(host)
+  if (match === null) return false
+  const [, name, seen] = match
+  // A request addressed to another host is a DNS-rebinding attempt, whatever its Origin says.
+  if (!LOOPBACK.includes(name!) || Number(seen) !== port) return false
+  // The scheme comes from the service: a TLS-terminated DSH sends `https://` and would otherwise be refused here.
   return req.headers['x-orchestrator-request'] === '1'
-    && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
+    && (req.headers.origin === undefined || req.headers.origin === `${protocol}//${host}`)
 }
 
 /** The prefix both routes live under; it never collides with the hub's `/orchestrator`. */
@@ -95,6 +105,8 @@ export interface RouteHost {
     handler: (req: IncomingMessage, res: ServerResponse) => Promise<void> }): () => void
   /** The port the web server listens on, used by the same-origin check. */
   port: number
+  /** The scheme the web server serves, so a TLS-terminated host's `https://` origin is accepted. */
+  protocol?: string
 }
 
 /**
@@ -106,7 +118,7 @@ export interface RouteHost {
 export function registerNodeRoutes(host: RouteHost, directory: string, run: RunCommand = realRun): () => void {
   return host.register({ kind: 'prefix', path: NODE_PREFIX, handler: async (req, res) => {
     // The guard runs before routing: an unauthenticated caller learns nothing about what exists here.
-    if (!sameOrigin(req, host.port)) { json(res, 403, { error: 'Same-origin request required' }); return }
+    if (!sameOrigin(req, host.port, host.protocol)) { json(res, 403, { error: 'Same-origin request required' }); return }
     const url = new URL(req.url ?? '/', 'http://localhost')
     const method = req.method ?? 'GET'
     try {

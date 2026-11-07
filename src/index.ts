@@ -5,7 +5,7 @@
  * It imports no domain core, opens no database, and reads no policy, because a device holds no ledger — the hub is
  * the only place work is recorded, and this side's job is to do it and say what happened.
  */
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -21,7 +21,7 @@ import { JobSessions } from './session.ts'
 import type { Frame } from './protocol.ts'
 
 /** Version reported in the hello, so the hub can tell which device build is talking. */
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 /** One project this device can work on: the hub's logical name and this machine's own absolute path. */
 export interface NodeRoot { project: string; path: string }
@@ -79,27 +79,87 @@ export interface NodeConfig {
  * The annotation names the schema type through the global `Schemastery` namespace rather than letting it be inferred:
  * an inferred type here names a `cosmokit` symbol the emitted declaration cannot reference portably.
  */
-export const Config: Schemastery<NodeConfig> = s.object({
-  url: s.string().default('').description('The hub\'s address, such as wss://foreman.example.com. The device dials out to it.'),
-  deviceId: s.string().default('').description('This device\'s id, as registered on the hub with `Devices.add`.'),
-  token: s.string().default('').role('secret').description('This device\'s token; it is sent in the hello frame and nowhere else.'),
-  roots: s.array(s.object({ project: s.string().required(), path: s.string().required() })).default([])
+const ConfigSchema = s.object({
+  url: s.string().default('').volatile().description('The hub\'s address, such as wss://foreman.example.com. The device dials out to it.'),
+  deviceId: s.string().default('').volatile().description('This device\'s id, as registered on the hub with `Devices.add`.'),
+  token: s.string().default('').role('secret').volatile().description('This device\'s token; it is sent in the hello frame and nowhere else.'),
+  roots: s.array(s.object({ project: s.string().required(), path: s.string().required() })).default([]).volatile()
     .description('Projects this device can work on: a logical name and this machine\'s own absolute path, kept verbatim.'),
-  heartbeatMs: s.natural().default(15_000).description('How often to tell the hub this device is alive, in milliseconds.'),
-  reconnectMs: s.natural().default(1_000).description('Delay before the first reconnect attempt, in milliseconds.'),
+  heartbeatMs: s.natural().default(15_000).volatile().description('How often to tell the hub this device is alive, in milliseconds.'),
+  reconnectMs: s.natural().default(1_000).volatile().description('Delay before the first reconnect attempt, in milliseconds.'),
   // Every field carries a default, and the object itself does too: a `cordis.patch.yml` written before this block
   // existed has no `ssh` key, and a schema that demanded one would report the whole profile invalid on upgrade.
   ssh: s.object({
     enabled: s.boolean().default(false).description('Reach the hub through an SSH tunnel this device starts itself.'),
     host: s.string().default('').description('The hub machine, such as 203.0.113.10 or its ~/.ssh/config alias.'),
-    port: s.natural().max(65535).default(22).description('The hub machine\'s SSH port.'),
+    // min(1), not just natural(): an empty port box becomes 0, and 0 is a port the tunnel would happily dial.
+    port: s.natural().min(1).max(65535).default(22).description('The hub machine\'s SSH port.'),
     user: s.string().default('').description('The SSH user on the hub machine.'),
     keyPath: s.string().default('').description('The private key this device authenticates with; the page lists these from ~/.ssh.'),
-    remotePort: s.natural().max(65535).default(8790).description('The port the hub listens on, on the hub machine.'),
-    localPort: s.natural().max(65535).default(8790).description('The local port the tunnel listens on; the device dials this.'),
+    remotePort: s.natural().min(1).max(65535).default(8790).description('The port the hub listens on, on the hub machine.'),
+    localPort: s.natural().min(1).max(65535).default(8790).description('The local port the tunnel listens on; the device dials this.'),
   }).default({ enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 })
     .description('How to reach the hub when it is not directly reachable: a tunnel this device opens and keeps open.'),
 })
+/**
+ * Why every field is volatile.
+ *
+ * Not for hot reload: it is the switch that makes the entry visible to DSH's settings system at all. `dsh-settings`
+ * skips every plugin entry whose `volatileForm(schema)` is undefined, and that only finds fields reachable through a
+ * volatile ancestor. Without it the configuration page has no form to render and sits on "reading configuration"
+ * forever — no fields, no test button, no save.
+ *
+ * A volatile field arrives wrapped, so its value is read with `.get()`; `configured()` is what unwraps a whole
+ * `NodeConfig` for the code that would rather not know. Marking the object instead of each field is not an option:
+ * `.volatile()` on the object replaces every default with `{}`, so `Config({})` loses all of them.
+ */
+
+/**
+ * What `apply` actually receives: every field wrapped, since each one is volatile.
+ *
+ * Declared as an alias rather than inferred so the plugin's public signature does not name a `schemastery` symbol the
+ * emitted declaration cannot reference portably.
+ */
+export type ConfigInput = { [K in keyof NodeConfig]: NodeConfig[K] | Volatile<NodeConfig[K]> }
+
+/**
+ * The schema, asserted rather than annotated.
+ *
+ * An annotation makes the declaration portable but cannot express what a volatile field does to a field's type, so the
+ * mismatch moves into the annotation. The assertion keeps the published `.d.ts` free of `schemastery` internals and
+ * puts the shape in one place; `configured()` is what re-establishes the real types at every read.
+ */
+const Typed = ConfigSchema as unknown as Schemastery<NodeConfig>
+export { Typed as Config }
+
+/** The SSH defaults, spread over whatever the host hands in, so a partial block is still complete. */
+export const SSH_DEFAULTS: SshConfig = { enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 }
+
+/**
+ * Fill in defaults for a configuration read outside the schema.
+ *
+ * `Config` already applies them, so `apply` sees a complete object. This exists for the one path that does not go
+ * through the schema: the configuration page's own read, which hands back what the profile patch holds and may be a
+ * partial block written before a field existed.
+ */
+/** A volatile field arrives wrapped; this reads it either way, so callers do not have to know which. */
+const valueOf = <T>(field: T | { get(): T } | undefined, fallback: T): T => {
+  if (field === undefined) return fallback
+  if (typeof field === 'object' && field !== null && 'get' in field && typeof (field as { get?: unknown }).get === 'function') {
+    return (field as { get(): T }).get()
+  }
+  return field as T
+}
+
+/** Unwrap a whole configuration: every field may be a volatile wrapper, a plain value, or absent. */
+export function configured(config: object | undefined): NodeConfig {
+  const source = (config ?? {}) as Record<string, unknown>
+  return { url: valueOf(source['url'] as string, ''), deviceId: valueOf(source['deviceId'] as string, ''),
+    token: valueOf(source['token'] as string, ''), roots: valueOf(source['roots'] as NodeRoot[], []),
+    heartbeatMs: valueOf(source['heartbeatMs'] as number, 15_000), reconnectMs: valueOf(source['reconnectMs'] as number, 1_000),
+    // The `ssh` block is a plain object: only the top-level fields are volatile.
+    ssh: { ...SSH_DEFAULTS, ...((source['ssh'] ?? {}) as Partial<SshConfig>) } }
+}
 
 /**
  * What this configuration still needs before the device can dial its hub, or undefined when it is complete.
@@ -147,7 +207,9 @@ export const inject = ['sessionController', 'sessionPersistence', 'workspaceRegi
  * The plugin returns once the connection is attempted, not once it succeeds: a device must boot and stay usable
  * while its hub is unreachable, and the client keeps retrying in the background.
  */
-export async function apply(ctx: Context, config: NodeConfig): Promise<void> {
+export async function apply(ctx: Context, raw: ConfigInput): Promise<void> {
+  // Every field is volatile, so `raw` holds wrappers; everything below wants plain values.
+  const config = configured(raw)
   // The configuration page has to work on a device that is not configured yet — that is precisely when someone opens
   // it — so the routes go up before the check below, not after it. `webServer` is injected optionally rather than
   // listed in `inject`: a headless or CLI DSH has no web server and must still take work, losing only the page.

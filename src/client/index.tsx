@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { ConfigPageForm, PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
-import type { NodeConfig } from '../index.ts'
+import { configured, type NodeConfig } from '../index.ts'
 import type { SshKey } from '../keys.ts'
 import type { TestResult } from '../routes.ts'
 import { addressPreview, configOf, DEFAULT_SSH, emptyFields, keyLabel, testMessage } from './page-state.ts'
@@ -51,12 +51,18 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
 }) {
   // The draft starts from the saved value when there is one, so the first render already shows the configuration
   // rather than a loading line that only an effect would replace.
-  const saved = form?.state.value as NodeConfig | undefined
+  // The host hands over the section's raw value; every field is volatile, so it is unwrapped once here.
+  const saved = form?.state.value === undefined ? undefined : configured(form.state.value as Partial<NodeConfig>)
   const editable = form?.state.status === 'ready' && form.state.writable
   // The draft starts from the saved value when there is one, so the first render already shows the configuration
   // rather than a loading line that only an effect would replace.
   const [draft, setDraft] = useState<NodeConfig | undefined>(() =>
-    saved === undefined ? undefined : { ...saved, ssh: { ...DEFAULT_SSH, ...saved.ssh } })
+    saved === undefined ? undefined : { ...saved, token: '', ssh: { ...DEFAULT_SSH, ...saved.ssh } })
+  // The stored token never reaches the page (it is a secret), so the box starts empty and is only written when
+  // someone types one. `keepsToken` is what tells the page it does not have to ask.
+  // A stored token cannot be detected: it is stripped before it reaches the page, so `saved.token` is always
+  // undefined. What can be known is that the section already exists, which is what the hint is based on.
+  const keepsToken = saved !== undefined
   const [keys, setKeys] = useState<SshKey[] | undefined>(initialKeys === undefined ? undefined : [...initialKeys])
   const [keysFailed, setKeysFailed] = useState(prefailed === true)
   const [tested, setTested] = useState<TestResult>()
@@ -95,7 +101,7 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
 
   if (draft === undefined) return <div data-foreman-node-page="loading">{t('loading')}</div>
   const address = addressPreview(draft)
-  const missing = emptyFields(draft)
+  const missing = emptyFields(draft, keepsToken)
   return <div data-foreman-node-page="ready">
     <h2>{t('title')}</h2>
     <p className="dt-hint">{t('intro')}</p>
@@ -127,13 +133,13 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
         <label>{t('host')}<input data-node-host value={draft.ssh.host} disabled={!editable}
           onChange={event => patchSsh({ host: event.target.value })} /></label>
         <label>{t('port')}<input type="number" data-node-port value={draft.ssh.port} disabled={!editable}
-          onChange={event => patchSsh({ port: Number(event.target.value) })} /></label>
+          onChange={event => patchSsh({ port: Number(event.target.value) || DEFAULT_SSH.port })} /></label>
         <label>{t('user')}<input data-node-user value={draft.ssh.user} disabled={!editable}
           onChange={event => patchSsh({ user: event.target.value })} /></label>
         <label>{t('remotePort')}<input type="number" data-node-remote-port value={draft.ssh.remotePort} disabled={!editable}
-          onChange={event => patchSsh({ remotePort: Number(event.target.value) })} /></label>
+          onChange={event => patchSsh({ remotePort: Number(event.target.value) || DEFAULT_SSH.remotePort })} /></label>
         <label>{t('localPort')}<input type="number" data-node-local-port value={draft.ssh.localPort} disabled={!editable}
-          onChange={event => patchSsh({ localPort: Number(event.target.value) })} /></label>
+          onChange={event => patchSsh({ localPort: Number(event.target.value) || DEFAULT_SSH.localPort })} /></label>
         <button type="button" data-node-test data-testing={testing ? 'true' : undefined}
           disabled={!draft.ssh.host.trim() || !draft.ssh.user.trim() || !draft.ssh.keyPath.trim()}
           onClick={() => { void test() }}>{testing ? t('testing') : t('test')}</button>
@@ -157,8 +163,9 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
       <label>{t('deviceId')}<input data-node-device value={draft.deviceId} disabled={!editable}
         onChange={event => patch({ deviceId: event.target.value })} /></label>
       <label>{t('token')}<input type="password" data-node-token value={draft.token} disabled={!editable}
+        autoComplete="new-password" placeholder={keepsToken ? t('tokenStored') : ''}
         onChange={event => patch({ token: event.target.value })} /></label>
-      <p className="dt-hint">{t('tokenHint')}</p>
+      <p className="dt-hint">{keepsToken ? t('tokenKeep') : t('tokenHint')}</p>
     </section>
 
     <section data-section="roots">
@@ -187,8 +194,9 @@ interface PageProps extends PluginConfigViewProps {
   t: (key: keyof typeof zh) => string
 }
 
-function Mounted({ t, form = undefined }: PageProps) {
-  return <DevicePage t={t} form={form} />
+function Mounted({ t, view, form = undefined }: PageProps) {
+  // A summary row gets nothing: the full page belongs to the page view, and DSH's own config form shows the summary.
+  return view === 'summary' ? null : <DevicePage t={t} form={form} />
 }
 
 /** Registers the page for the `dsh-foreman-node` row. */

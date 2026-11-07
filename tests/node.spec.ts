@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { JobSessions } from '../src/session.ts'
 import { foremanReportTool } from '../src/report-tool.ts'
 import { parseFrame } from '../src/protocol.ts'
-import { apply, Config, hubUrlOf, missingConfiguration } from '../src/index.ts'
+import { apply, Config, configured, hubUrlOf, missingConfiguration, SSH_DEFAULTS } from '../src/index.ts'
 
 /**
  * A host that behaves like DSH for the parts a job touches: `resolveAgent` fails until `create` has run, `create`
@@ -112,23 +112,23 @@ it('round-trips a frame the way the hub will read it', () => {
  */
 describe('a device with no configuration yet', () => {
   it('does not require a hub address, a device id or a token to activate', () => {
-    const parsed = Config({} as never)
+    const parsed = configured(Config({} as never))
     expect(parsed.url).toBe('')
     expect(parsed.deviceId).toBe('')
     expect(parsed.token).toBe('')
   })
 
   it('says what is missing, and names the command that fills it in', () => {
-    expect(missingConfiguration(Config({} as never))).toMatch(/dsh-foreman-node is not configured yet/)
-    expect(missingConfiguration(Config({} as never))).toMatch(/url/)
+    expect(missingConfiguration(configured(Config({} as never)))).toMatch(/dsh-foreman-node is not configured yet/)
+    expect(missingConfiguration(configured(Config({} as never)))).toMatch(/url/)
   })
 
   it('reports nothing missing once the three values are there', () => {
-    expect(missingConfiguration(Config({ url: 'wss://hub.example.com', deviceId: 'laptop', token: 'tok' } as never))).toBeUndefined()
+    expect(missingConfiguration(configured(Config({ url: 'wss://hub.example.com', deviceId: 'laptop', token: 'tok' } as never)))).toBeUndefined()
   })
 
   it('still treats a blank address as unconfigured, so a half-filled row does not dial nowhere', () => {
-    expect(missingConfiguration(Config({ url: '   ', deviceId: 'laptop', token: 'tok' } as never))).toMatch(/url/)
+    expect(missingConfiguration(configured(Config({ url: '   ', deviceId: 'laptop', token: 'tok' } as never)))).toMatch(/url/)
   })
 })
 
@@ -139,26 +139,25 @@ describe('a device with no configuration yet', () => {
  */
 describe('the address the device dials', () => {
   /** A full config from the schema's own defaults, so a field added later cannot make this helper stale. */
-  const config = (overrides: Record<string, unknown> = {}) =>
-    Config({ enabled: false, ...overrides } as never) as unknown as ReturnType<typeof Config> & { ssh: Record<string, unknown> }
+  const config = (overrides: Record<string, unknown> = {}) => configured(Config(overrides as never))
 
   it('derives the tunnel address from the local port when the tunnel is on', () => {
-    const parsed = Config({ url: 'wss://ignored.example', ssh: { enabled: true, localPort: 8790 } } as never)
+    const parsed = configured(Config({ url: 'wss://ignored.example', ssh: { enabled: true, localPort: 8790 } } as never))
     expect(hubUrlOf(parsed)).toBe('ws://127.0.0.1:8790')
   })
 
   it('uses the configured address when the tunnel is off', () => {
-    const parsed = Config({ url: 'wss://foreman.example', ssh: { enabled: false } } as never)
+    const parsed = configured(Config({ url: 'wss://foreman.example', ssh: { enabled: false } } as never))
     expect(hubUrlOf(parsed)).toBe('wss://foreman.example')
   })
 
   it('reports a missing address only when the tunnel is off', () => {
-    expect(missingConfiguration(Config({ url: '', ssh: { enabled: false } } as never))).toMatch(/url/)
-    expect(missingConfiguration(Config({ url: '', ssh: { enabled: true } } as never))).not.toMatch(/url/)
+    expect(missingConfiguration(configured(Config({ url: '', ssh: { enabled: false } } as never)))).toMatch(/url/)
+    expect(missingConfiguration(configured(Config({ url: '', ssh: { enabled: true } } as never)))).not.toMatch(/url/)
   })
 
   it('still requires a host, a user and a key when the tunnel is on', () => {
-    const missing = missingConfiguration(Config({ url: '', ssh: { enabled: true, host: '', user: '', keyPath: '' } } as never))
+    const missing = missingConfiguration(configured(Config({ url: '', ssh: { enabled: true, host: '', user: '', keyPath: '' } } as never)))
     expect(missing).toMatch(/ssh\.host/)
     expect(missing).toMatch(/ssh\.user/)
     expect(missing).toMatch(/ssh\.keyPath/)

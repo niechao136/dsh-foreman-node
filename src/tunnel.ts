@@ -46,6 +46,8 @@ export interface TunnelInput {
 const READY_TIMEOUT_MS = 10_000
 /** How often to ask whether the port answers yet. */
 const READY_POLL_MS = 200
+/** How long a stopped process may take to honour SIGTERM before it is killed. */
+const STOP_GRACE_MS = 2_000
 /** How much of ssh's stderr to keep: enough for the reason, not enough to grow without bound. */
 const STDERR_KEEP = 2_048
 /** `-N` forks no command, `-T` allocates no terminal: this process exists only to carry the forward. */
@@ -115,6 +117,17 @@ export class Tunnel {
   private lastFailure: string | undefined
   private child: TunnelChild | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
+  /** The pending escalation from SIGTERM to SIGKILL after `stop()`. */
+  private killTimer: ReturnType<typeof setTimeout> | undefined
+  /** Whether the local port was free when the current attempt spawned; only then can an answer be our own forward. */
+  private portWasFree = false
+  /**
+   * The child that has actually exited, if any.
+   *
+   * `ChildProcess.killed` means "a signal was sent", not "the process is gone", so it cannot answer "is it still
+   * running" — and using it that way makes the SIGKILL escalation unreachable. The exit event is the only truth.
+   */
+  private exitedChild: TunnelChild | undefined
   /** A generation counter, so a late callback from a superseded attempt cannot overwrite the current state. */
   private generation = 0
   private retryMs: number
@@ -136,23 +149,40 @@ export class Tunnel {
   /** Start the first attempt, or do nothing if one is already running. */
   start(): void {
     if (this.current === 'connecting' || this.current === 'connected') return
-    this.attempt()
+    void this.attempt()
   }
 
-  /** End the process and any pending retry; safe to call more than once. */
+  /**
+   * End the process and any pending retry; safe to call more than once.
+   *
+   * SIGTERM first, then SIGKILL: an ssh that ignores or is slow to handle the polite signal would otherwise outlive
+   * the plugin, keep `localPort` bound, and make the next activation's first attempt fail on a port it still owns.
+   */
   stop(): void {
     this.generation++
     if (this.timer !== undefined) { clearTimeout(this.timer); this.timer = undefined }
+    if (this.killTimer !== undefined) { clearTimeout(this.killTimer); this.killTimer = undefined }
     const child = this.child
     this.child = undefined
-    if (child !== undefined && !child.killed) child.kill('SIGTERM')
     this.set('idle')
+    if (child === undefined || this.exitedChild === child) return
+    child.kill('SIGTERM')
+    this.killTimer = setTimeout(() => {
+      if (this.exitedChild !== child) child.kill('SIGKILL')
+    }, STOP_GRACE_MS)
+    this.killTimer.unref?.()
   }
 
-  /** One attempt: spawn, wait for the local port, then either stay connected or fail and schedule a retry. */
-  private attempt(): void {
+  /** One attempt: check the port is free, spawn, wait for the local port, then either stay connected or fail. */
+  private async attempt(): Promise<void> {
     const generation = ++this.generation
     this.set('connecting')
+    // The port has to be free when we spawn, so that a later answer is ours rather than a neighbour's. Without this,
+    // a port already bound by something else reads as success on the very first probe — precisely the case
+    // ExitOnForwardFailure exists to surface, reported as working.
+    const startedFree = !await this.probe(this.input.ssh.localPort)
+    if (generation !== this.generation) return
+    this.portWasFree = startedFree
     const argv = tunnelArgs(this.input.ssh)
     let stderr = ''
     let settled = false
@@ -164,12 +194,14 @@ export class Tunnel {
     child.stderr?.on('data', collect)
     child.on('error', (error: Error) => { if (!settled) { settled = true; this.fail(generation, `could not start ssh: ${error.message}`) } })
     child.on('exit', code => {
+      // Recorded before the guards: `stop()` needs to know the process is gone even though the generation moved on.
+      this.exitedChild = child
       if (settled || generation !== this.generation) return
       settled = true
       // A clean exit still means the tunnel is gone; only its wording differs.
       this.fail(generation, code === null || code === 0 ? `the tunnel to ${this.input.ssh.host} closed` : explain(this.input.ssh, stderr))
     })
-    void this.waitReady(generation, () => settled, () => { settled = true })
+    void this.waitReady(generation, startedFree, () => settled, () => { settled = true })
   }
 
   /**
@@ -180,12 +212,20 @@ export class Tunnel {
    * schedule a retry. Marking it settled here would leave a device that connects once and then silently stops
    * taking work, which is the hardest failure to notice.
    */
-  private async waitReady(generation: number, settled: () => boolean, markSettled: () => void): Promise<void> {
+  private async waitReady(generation: number, startedFree: boolean, settled: () => boolean, markSettled: () => void): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_MS
     while (Date.now() < deadline) {
       if (generation !== this.generation || settled()) return
       if (await this.probe(this.input.ssh.localPort)) {
         if (generation !== this.generation || settled()) return
+        // A port that was already answering when we spawned is somebody else's listener, not our forward. Reporting
+        // `connected` there would open the client against a stranger and then flip to `failed`, twice per retry.
+        if (!startedFree) {
+          markSettled()
+          this.fail(generation, `local port ${this.input.ssh.localPort} was already in use before this attempt,`
+            + ` so the device cannot tell its own tunnel from whatever owns that port; close it or set a different localPort`)
+          return
+        }
         // The forward works, so the retry delay starts over: one good minute should not be followed by a long wait.
         this.retryMs = this.input.retryMs ?? 1_000
         this.lastFailure = undefined
@@ -214,7 +254,7 @@ export class Tunnel {
     this.timer = setTimeout(() => {
       this.timer = undefined
       if (generation !== this.generation) return
-      this.attempt()
+      void this.attempt()
     }, delay)
     // A pending retry must not be the only thing keeping the host process alive.
     this.timer.unref?.()

@@ -93,6 +93,15 @@ it('refuses a request addressed to another host, which is how a rebinding attack
   expect((await serve(keysDir({}))('GET', 'keys', undefined, { host: 'evil.example:3088' })).status).toBe(403)
 })
 
+it('accepts the loopback names DSH may normalize to, and a TLS origin', async () => {
+  const request = serve(keysDir({}))
+  // The desktop build may bind ::1 and normalize the host header to whichever form it chose.
+  expect((await request('GET', 'keys', undefined, { host: '[::1]:3088' })).status).toBe(200)
+  expect((await request('GET', 'keys', undefined, { host: 'localhost:3088' })).status).toBe(200)
+  // A port that is not this service's is still another host.
+  expect((await request('GET', 'keys', undefined, { host: '127.0.0.1:9999' })).status).toBe(403)
+})
+
 it('answers unknown paths rather than pretending they work', async () => {
   expect((await serve(keysDir({}))('GET', 'nope')).status).toBe(404)
 })

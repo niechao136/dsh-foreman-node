@@ -32,7 +32,7 @@ export function addressPreview(config: Pick<NodeConfig, 'url' | 'ssh'>): { addre
  * This mirrors `missingConfiguration` for the page's benefit: the host reports the same thing in one sentence, and a
  * form that highlights the empty field is the difference between reading a sentence and fixing it.
  */
-export function emptyFields(config: NodeConfig): string[] {
+export function emptyFields(config: NodeConfig, tokenPresent = true): string[] {
   const empty: string[] = []
   if (config.ssh.enabled) {
     if (config.ssh.host.trim() === '') empty.push('ssh.host')
@@ -41,7 +41,9 @@ export function emptyFields(config: NodeConfig): string[] {
     if (config.ssh.keyPath.trim() === '') empty.push('ssh.keyPath')
   } else if (config.url.trim() === '') empty.push('url')
   if (config.deviceId.trim() === '') empty.push('deviceId')
-  if (config.token.trim() === '') empty.push('token')
+  // The token is a secret: it never reaches the page, so an absent value means "already stored", not "missing".
+  // A page that asked for it here would nag about a field it cannot see and cannot show.
+  if (!tokenPresent) empty.push('token')
   return empty
 }
 
@@ -51,6 +53,11 @@ export function emptyFields(config: NodeConfig): string[] {
  * A passphrase-protected key fails with the same words as a wrong one, so the message names both possibilities; the
  * other failures are ssh's own and are shown as they are, which is enough for someone who can read them.
  */
+/** Whether the page should ask for a token: only when nothing is stored yet. */
+export function needsToken(config: Pick<NodeConfig, 'token'>): boolean {
+  return typeof config.token !== 'string' || config.token.trim() === ''
+}
+
 export function testMessage(result: TestResult): string {
   if (result.ok) return 'ok'
   if (/Permission denied \(publickey/.test(result.output)) return 'passphrase'
@@ -59,9 +66,17 @@ export function testMessage(result: TestResult): string {
   return result.output.trim() === '' ? 'refused' : result.output
 }
 
-/** The values the page writes back, trimmed so a stray space does not become part of a token. */
+/**
+ * The values the page writes back, trimmed so a stray space does not become part of a token.
+ *
+ * `token` is included only when the page actually holds one. A secret field is stripped from everything the host
+ * sends, so `draft.token` is normally undefined; writing that back as `''` would replace the stored token with an
+ * empty string and leave the device unable to authenticate for good.
+ */
 export function configOf(draft: NodeConfig): Record<string, unknown> {
-  return { url: draft.url.trim(), deviceId: draft.deviceId.trim(), token: draft.token.trim(),
+  const token = typeof draft.token === 'string' ? draft.token.trim() : ''
+  return { url: draft.url.trim(), deviceId: draft.deviceId.trim(),
+    ...token === '' ? {} : { token },
     roots: draft.roots.map(root => ({ project: root.project.trim(), path: root.path.trim() })),
     ssh: { ...draft.ssh, host: draft.ssh.host.trim(), user: draft.ssh.user.trim(), keyPath: draft.ssh.keyPath.trim() } }
 }
