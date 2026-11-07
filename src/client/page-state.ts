@@ -5,7 +5,7 @@
  * form. Keeping the decisions here — which keys to offer, what the address becomes, what to say about a failed test —
  * means they are provable without a DOM, which matters for a package this small.
  */
-import type { NodeConfig, SshConfig } from '../index.ts'
+import type { NodeConfig, SshConfig } from '../config.ts'
 import type { SshKey } from '../keys.ts'
 import type { TestResult } from '../routes.ts'
 

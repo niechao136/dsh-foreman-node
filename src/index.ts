@@ -15,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { NodeClient } from './client.ts'
+import { configured, SSH_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig } from './config.ts'
 import { registerNodeRoutes, type RouteHost } from './routes.ts'
 import { Tunnel } from './tunnel.ts'
 import { JobSessions } from './session.ts'
@@ -22,51 +23,6 @@ import type { Frame } from './protocol.ts'
 
 /** Version reported in the hello, so the hub can tell which device build is talking. */
 export const VERSION = '0.2.0'
-
-/** One project this device can work on: the hub's logical name and this machine's own absolute path. */
-export interface NodeRoot { project: string; path: string }
-
-/**
- * How the device reaches a hub it cannot reach directly.
- *
- * The hub listens on loopback only — a deliberate constraint, because the ledger is the one thing worth protecting —
- * so a device on another machine reaches it through a tunnel. With `enabled` the device opens that tunnel itself and
- * dials its own end of it; `url` is then unused, not overridden, so switching back to a direct address restores it.
- */
-export interface SshConfig {
-  /** Open a tunnel to the hub instead of dialling `url` directly. */
-  enabled: boolean
-  /** The hub machine: an address or a `~/.ssh/config` alias. */
-  host: string
-  /** The hub machine's SSH port. */
-  port: number
-  /** The SSH user on the hub machine. */
-  user: string
-  /** The private key this device authenticates with. The configuration page lists these from `~/.ssh`. */
-  keyPath: string
-  /** The port the hub listens on, on the hub machine. */
-  remotePort: number
-  /** The local port the tunnel listens on; the device dials this. */
-  localPort: number
-}
-
-/** What the `dsh-foreman-node` entry in a profile's patch configures. */
-export interface NodeConfig {
-  /** The hub's stable address; the device dials out to it. Blank until someone fills it in. */
-  url: string
-  /** This device's id, as registered on the hub with `Devices.add`. Blank until someone fills it in. */
-  deviceId: string
-  /** This device's token; sent in the hello and nowhere else. Blank until someone fills it in. */
-  token: string
-  /** The projects this device can work on. */
-  roots: NodeRoot[]
-  /** How often to tell the hub this device is alive, in milliseconds. */
-  heartbeatMs: number
-  /** Delay before the first reconnect attempt, in milliseconds. */
-  reconnectMs: number
-  /** How to reach a hub that is not directly reachable. */
-  ssh: SshConfig
-}
 
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
@@ -131,35 +87,6 @@ export type ConfigInput = { [K in keyof NodeConfig]: NodeConfig[K] | Volatile<No
  */
 const Typed = ConfigSchema as unknown as Schemastery<NodeConfig>
 export { Typed as Config }
-
-/** The SSH defaults, spread over whatever the host hands in, so a partial block is still complete. */
-export const SSH_DEFAULTS: SshConfig = { enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 }
-
-/**
- * Fill in defaults for a configuration read outside the schema.
- *
- * `Config` already applies them, so `apply` sees a complete object. This exists for the one path that does not go
- * through the schema: the configuration page's own read, which hands back what the profile patch holds and may be a
- * partial block written before a field existed.
- */
-/** A volatile field arrives wrapped; this reads it either way, so callers do not have to know which. */
-const valueOf = <T>(field: T | { get(): T } | undefined, fallback: T): T => {
-  if (field === undefined) return fallback
-  if (typeof field === 'object' && field !== null && 'get' in field && typeof (field as { get?: unknown }).get === 'function') {
-    return (field as { get(): T }).get()
-  }
-  return field as T
-}
-
-/** Unwrap a whole configuration: every field may be a volatile wrapper, a plain value, or absent. */
-export function configured(config: object | undefined): NodeConfig {
-  const source = (config ?? {}) as Record<string, unknown>
-  return { url: valueOf(source['url'] as string, ''), deviceId: valueOf(source['deviceId'] as string, ''),
-    token: valueOf(source['token'] as string, ''), roots: valueOf(source['roots'] as NodeRoot[], []),
-    heartbeatMs: valueOf(source['heartbeatMs'] as number, 15_000), reconnectMs: valueOf(source['reconnectMs'] as number, 1_000),
-    // The `ssh` block is a plain object: only the top-level fields are volatile.
-    ssh: { ...SSH_DEFAULTS, ...((source['ssh'] ?? {}) as Partial<SshConfig>) } }
-}
 
 /**
  * What this configuration still needs before the device can dial its hub, or undefined when it is complete.
@@ -297,6 +224,7 @@ async function receive(ctx: Context, jobs: JobSessions, client: NodeClient, fram
   }
 }
 
+export { configured, SSH_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig } from './config.ts'
 export { NodeClient } from './client.ts'
 export { Tunnel, tunnelArgs } from './tunnel.ts'
 export { listKeys } from './keys.ts'
