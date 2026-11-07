@@ -69,11 +69,32 @@ const valueOf = <T>(field: T | { get(): T } | undefined, fallback: T): T => {
  * `Config` already applies defaults, so `apply` sees a complete object. This is for the paths that do not go through
  * the schema: the configuration page's read, and a `cordis.patch.yml` written before a field existed.
  */
+/**
+ * Unwrap the `ssh` block.
+ *
+ * Its fields are volatile for the same reason the top level is, so each may arrive wrapped. Reading them all through
+ * `valueOf` keeps one unwrapping rule instead of two, and it means a plain partial block (an older patch file) works
+ * just as well as a wrapped one.
+ */
+function unwrapSsh(block: unknown): Partial<SshConfig> {
+  if (block === null || typeof block !== 'object') return {}
+  const source = block as Record<string, unknown>
+  return {
+    enabled: valueOf(source['enabled'] as boolean, SSH_DEFAULTS.enabled),
+    host: valueOf(source['host'] as string, SSH_DEFAULTS.host),
+    port: valueOf(source['port'] as number, SSH_DEFAULTS.port),
+    user: valueOf(source['user'] as string, SSH_DEFAULTS.user),
+    keyPath: valueOf(source['keyPath'] as string, SSH_DEFAULTS.keyPath),
+    remotePort: valueOf(source['remotePort'] as number, SSH_DEFAULTS.remotePort),
+    localPort: valueOf(source['localPort'] as number, SSH_DEFAULTS.localPort),
+  }
+}
+
 export function configured(config: object | undefined): NodeConfig {
   const source = (config ?? {}) as Record<string, unknown>
   return { url: valueOf(source['url'] as string, ''), deviceId: valueOf(source['deviceId'] as string, ''),
     token: valueOf(source['token'] as string, ''), roots: valueOf(source['roots'] as NodeRoot[], []),
     heartbeatMs: valueOf(source['heartbeatMs'] as number, 15_000), reconnectMs: valueOf(source['reconnectMs'] as number, 1_000),
-    // The `ssh` block is a plain object: only the top-level fields are volatile.
-    ssh: { ...SSH_DEFAULTS, ...((source['ssh'] ?? {}) as Partial<SshConfig>) } }
+    // `ssh` holds volatile fields too, so each one is unwrapped like the top level.
+    ssh: { ...SSH_DEFAULTS, ...unwrapSsh(source['ssh']) } }
 }

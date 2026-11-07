@@ -45,15 +45,18 @@ const ConfigSchema = s.object({
   reconnectMs: s.natural().default(1_000).volatile().description('Delay before the first reconnect attempt, in milliseconds.'),
   // Every field carries a default, and the object itself does too: a `cordis.patch.yml` written before this block
   // existed has no `ssh` key, and a schema that demanded one would report the whole profile invalid on upgrade.
+  // Every field here is volatile for the same reason as the top level: `isVolatilePath` walks into this object, so a
+  // non-volatile child makes the whole section unwritable and the page reports "could not save". Marked per field
+  // rather than on the object, which would replace this block's default with `{}`.
   ssh: s.object({
-    enabled: s.boolean().default(false).description('Reach the hub through an SSH tunnel this device starts itself.'),
-    host: s.string().default('').description('The hub machine, such as 203.0.113.10 or its ~/.ssh/config alias.'),
+    enabled: s.boolean().default(false).volatile().description('Reach the hub through an SSH tunnel this device starts itself.'),
+    host: s.string().default('').volatile().description('The hub machine, such as 203.0.113.10 or its ~/.ssh/config alias.'),
     // min(1), not just natural(): an empty port box becomes 0, and 0 is a port the tunnel would happily dial.
-    port: s.natural().min(1).max(65535).default(22).description('The hub machine\'s SSH port.'),
-    user: s.string().default('').description('The SSH user on the hub machine.'),
-    keyPath: s.string().default('').description('The private key this device authenticates with; the page lists these from ~/.ssh.'),
-    remotePort: s.natural().min(1).max(65535).default(8790).description('The port the hub listens on, on the hub machine.'),
-    localPort: s.natural().min(1).max(65535).default(8790).description('The local port the tunnel listens on; the device dials this.'),
+    port: s.natural().min(1).max(65535).default(22).volatile().description('The hub machine\'s SSH port.'),
+    user: s.string().default('').volatile().description('The SSH user on the hub machine.'),
+    keyPath: s.string().default('').volatile().description('The private key this device authenticates with; the page lists these from ~/.ssh.'),
+    remotePort: s.natural().min(1).max(65535).default(8790).volatile().description('The port the hub listens on, on the hub machine.'),
+    localPort: s.natural().min(1).max(65535).default(8790).volatile().description('The local port the tunnel listens on; the device dials this.'),
   }).default({ enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 })
     .description('How to reach the hub when it is not directly reachable: a tunnel this device opens and keeps open.'),
 })
