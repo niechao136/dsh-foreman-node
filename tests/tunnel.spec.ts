@@ -11,7 +11,8 @@ const ssh = (overrides: Partial<SshConfig> = {}): SshConfig =>
     remotePort: 8790, localPort: 8790, ...overrides })
 
 /** A child that reports the exit the test asked for, on the next tick, so the retry path runs. */
-function fakeChild(exit?: { code: number | null; stderr?: string }): TunnelChild & { killed: boolean } {
+type FakeChild = TunnelChild & { killed: boolean; emitExit(code: number | null, stderr?: string): void }
+function fakeChild(exit?: { code: number | null; stderr?: string }): FakeChild {
   const listeners: ((code: number | null) => void)[] = []
   const stderrListeners: ((chunk: Buffer) => void)[] = []
   const child = {
@@ -39,7 +40,7 @@ function fakeChild(exit?: { code: number | null; stderr?: string }): TunnelChild
       for (const listener of listeners) listener(exit.code)
     }, 0)
   }
-  return child as unknown as TunnelChild & { killed: boolean }
+  return child as unknown as FakeChild
 }
 
 describe('the ssh command the tunnel runs', () => {
@@ -125,7 +126,7 @@ describe('a tunnel that worked and then died', () => {
     // The worst failure this class can have: it reports connected once, the link drops, and nothing ever notices.
     // A device in that state takes no work and looks online, so this case is pinned rather than left to luck.
     let spawns = 0
-    const children: (TunnelChild & { killed: boolean })[] = []
+    const children: FakeChild[] = []
     const tunnel = new Tunnel({ ssh: ssh(), retryMs: 5, log: () => {}, probe: async () => true,
       spawn: () => { spawns++; const child = fakeChild(); children.push(child); return child } })
     tunnel.start()

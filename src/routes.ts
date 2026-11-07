@@ -123,7 +123,16 @@ export function registerNodeRoutes(host: RouteHost, directory: string, run: RunC
           return
         }
         const port = typeof input.port === 'number' && Number.isInteger(input.port) && input.port > 0 && input.port <= 65535 ? input.port : 22
-        const result = await run(testArgs({ host: input.host.trim(), port, user: input.user.trim(), keyPath: input.keyPath.trim() }))
+        // Only a key this machine already offers may be tested. The page can only pick from that list, so anything
+        // else is either a stale form or a caller asking this process to run ssh against a path of its choosing;
+        // neither is a reason to start a process.
+        const keyPath = input.keyPath.trim()
+        const known = listKeys(directory).find(key => key.path === keyPath)
+        if (known === undefined) {
+          json(res, 400, { error: `no key at ${keyPath}; the page lists the ones this machine has` })
+          return
+        }
+        const result = await run(testArgs({ host: input.host.trim(), port, user: input.user.trim(), keyPath }))
         // A refused key is an answer the page shows, not a server error: 200 with `ok: false` and ssh's own words.
         json(res, 200, { ok: result.code === 0, output: result.output })
         return

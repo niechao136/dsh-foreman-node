@@ -47,15 +47,17 @@ it('answers which keys exist, and never their contents', async () => {
 })
 
 it('reports a refused key as an answer, not as a server error', async () => {
-  const response = await serve(keysDir({}), async () => ({ code: 255, output: 'Permission denied (publickey).' }))(
-    'POST', 'test', { host: 'h', port: 22, user: 'u', keyPath: '/k' })
+  const directory = keysDir({ id_ed25519: 'P', 'id_ed25519.pub': 'ssh-ed25519 AAAA c' })
+  const response = await serve(directory, async () => ({ code: 255, output: 'Permission denied (publickey).' }))(
+    'POST', 'test', { host: 'h', port: 22, user: 'u', keyPath: join(directory, 'id_ed25519') })
   expect(response.status).toBe(200)
   expect(response.body).toEqual({ ok: false, output: 'Permission denied (publickey).' })
 })
 
 it('reports a working key as ok', async () => {
-  const response = await serve(keysDir({}), async () => ({ code: 0, output: '' }))('POST', 'test',
-    { host: 'h', port: 22, user: 'u', keyPath: '/k' })
+  const directory = keysDir({ id_ed25519: 'P', 'id_ed25519.pub': 'ssh-ed25519 AAAA c' })
+  const response = await serve(directory, async () => ({ code: 0, output: '' }))('POST', 'test',
+    { host: 'h', port: 22, user: 'u', keyPath: join(directory, 'id_ed25519') })
   expect(response.body).toEqual({ ok: true, output: '' })
 })
 
@@ -66,6 +68,16 @@ it('asks for host, user and key before it runs anything', async () => {
   expect((await request('POST', 'test', { host: '', user: 'u', keyPath: '/k' })).status).toBe(400)
   expect((await request('POST', 'test', { host: 'h', user: '', keyPath: '/k' })).status).toBe(400)
   expect((await request('POST', 'test', { host: 'h', user: 'u' })).status).toBe(400)
+  expect(ran).toBe(0)
+})
+
+it('refuses to run ssh against a key this machine does not offer', async () => {
+  let ran = 0
+  const run = async () => { ran++; return { code: 0, output: '' } }
+  const directory = keysDir({ id_ed25519: 'P', 'id_ed25519.pub': 'ssh-ed25519 AAAA c' })
+  const response = await serve(directory, run)('POST', 'test', { host: 'h', user: 'u', keyPath: '/somewhere/else' })
+  expect(response.status).toBe(400)
+  // The point is that nothing was started: a caller must not talk this process into running ssh on any path.
   expect(ran).toBe(0)
 })
 
