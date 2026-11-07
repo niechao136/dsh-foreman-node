@@ -25,6 +25,35 @@
      └───────────────────────────────┘
 ```
 
+## 配置
+
+装进 profile 后会多出「设置 › 插件 › dsh-foreman-node」一个配置页：从这台机器的 `~/.ssh` 里
+挑一把密钥、填枢纽机器与用户、点「测试连接」、把枢纽上登记设备时给出的 `deviceId` 和 `token` 填进来，
+再填项目名到本机路径的对应关系。保存后重启 DSH 生效。
+
+隧道由插件自己拉起（`ssh -N -L`，断了自动重连），不需要再手开 `ssh -L`。
+
+也可以直接写 profile 的 `cordis.patch.yml`：
+
+```yaml
+- id: dsh-foreman-node
+  config:
+    url: wss://foreman.example.com   # 隧道开着时不参与连接
+    deviceId: laptop
+    token: <枢纽登记设备时给出的令牌>
+    roots:
+      - project: shop
+        path: 'D:\工作\shop'
+    ssh:
+      enabled: true
+      host: 203.0.113.10
+      port: 22
+      user: ubuntu
+      keyPath: /home/me/.ssh/id_ed25519
+```
+
+不支持密码登录（自动重连的前提是 `BatchMode=yes`），也不支持带口令的私钥——请放进 ssh-agent。
+
 ## 状态
 
 **早期开发中。** 协议、连接、接单与回报工具都已落地并有测试（14 项）。
