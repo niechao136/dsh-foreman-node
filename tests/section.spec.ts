@@ -20,6 +20,11 @@ const controller = (snapshot: unknown) => ({
   mutate: async () => true,
 })
 
+/** A snapshot the page can actually render a form from. */
+const ready = { status: 'ready' as const, value: { url: 'wss://hub.example', deviceId: 'pc', token: 'tok', roots: [],
+  heartbeatMs: 15_000, reconnectMs: 1_000, ssh: {} }, base: undefined, user: undefined, revision: 1,
+  writable: true, mode: 'host' as const }
+
 it('names the settings entry after the patch row it configures', () => {
   expect(ENTRY_ID).toBe('dsh-foreman-node')
   expect(ENTRY_ORDER).toBe(55)
@@ -33,7 +38,14 @@ it('finds the row id in a patch, and says so when there is no row at all', () =>
   expect(assertEntryId('')).toBeUndefined()
 })
 
-it('renders a placeholder until the page itself is wired in', () => {
+it('renders the configuration page once the host publishes a section', () => {
+  const markup = renderToStaticMarkup(createElement(Section,
+    { form: controller(ready), t } as never))
+  expect(markup).toContain('data-foreman-node-page="ready"')
+})
+
+it('shows the reading line while the form has no value yet', () => {
   const markup = renderToStaticMarkup(createElement(Section, { form: controller({ status: 'loading' }), t } as never))
-  expect(markup).toContain('data-section-pending')
+  expect(markup).toContain(zh.loading)
+  expect(markup).not.toContain('data-node-save')
 })

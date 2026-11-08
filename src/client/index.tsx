@@ -10,11 +10,12 @@ import { useEffect, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type { ConfigPageForm, PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
+import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { configured, type NodeConfig } from '../config.ts'
 import type { SshKey } from '../keys.ts'
 import type { TestResult } from '../routes.ts'
 import { addressPreview, DEFAULT_SSH, editsOf, emptyFields, keyLabel, testMessage } from './page-state.ts'
+import type { PageForm } from './section.ts'
 import { en, zh } from './locales.ts'
 
 /** The prefix the device's own routes answer under. */
@@ -45,7 +46,13 @@ const NS = 'dshNode'
  */
 function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
   t: (key: keyof typeof zh) => string
-  form: ConfigPageForm | undefined
+  /**
+   * The configuration form, or undefined when the host has not published this entry yet.
+   *
+   * The distinction matters: an absent form means "not readable yet", and a page that treated it as "nothing is
+   * configured" would show an empty form and invite a save that overwrites the real values.
+   */
+  form: PageForm | undefined
   initialKeys?: readonly SshKey[]
   keysFailed?: boolean
 }) {

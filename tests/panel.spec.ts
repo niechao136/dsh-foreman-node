@@ -11,6 +11,7 @@ import { expect, it } from 'vitest'
 import { DevicePage } from '../src/client/index.tsx'
 import { zh } from '../src/client/locales.ts'
 import { DEFAULT_SSH } from '../src/client/page-state.ts'
+import type { PageForm } from '../src/client/section.ts'
 import type { NodeConfig } from '../src/index.ts'
 
 /** The page's translator: the real dictionary, with `{name}` substitution like the host does. */
@@ -20,9 +21,10 @@ const config = (overrides: Partial<NodeConfig> = {}): NodeConfig => ({
   url: 'wss://hub.example', deviceId: 'laptop', token: 'tok', roots: [], heartbeatMs: 15_000, reconnectMs: 1_000,
   ssh: { ...DEFAULT_SSH }, ...overrides }) as NodeConfig
 
-/** A form whose saved value is `value`, so the page renders a draft from it. */
-const form = (value: NodeConfig, writable = true) => ({ state: { status: 'ready' as const, value, writable, revision: 1 },
-  mutate: async () => true }) as never
+/** A form snapshot in the shape the settings provider hands over; the page reads `state.value` out of it. */
+const form = (value: NodeConfig, writable = true): PageForm => ({ state: {
+  status: 'ready' as const, value: value as unknown as Record<string, unknown>, base: undefined, user: undefined,
+  revision: 1, writable, mode: 'host' as const }, mutate: async () => true })
 
 /** The page, with the key list and the test result supplied rather than fetched. */
 const render = (value: NodeConfig, options: { keys?: unknown[]; failed?: boolean } = {}): string =>
@@ -69,4 +71,12 @@ it('tells a person to edit the profile when the host accepts no writes', () => {
 
 it('offers the save button when the host accepts writes', () => {
   expect(render(config())).toContain('data-node-save')
+})
+
+it('waits instead of showing an empty form while the host has not published the entry', () => {
+  // A page that treated a missing form as "nothing is configured yet" would show an empty form and invite a save
+  // that overwrites the real values — the defect that once took a device offline.
+  const markup = renderToStaticMarkup(createElement(DevicePage, { t, form: undefined } as never))
+  expect(markup).toContain(zh.loading)
+  expect(markup).not.toContain('data-node-save')
 })
