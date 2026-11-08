@@ -21,8 +21,14 @@ import { Tunnel } from './tunnel.ts'
 import { JobSessions } from './session.ts'
 import type { Frame } from './protocol.ts'
 
-/** Version reported in the hello, so the hub can tell which device build is talking. */
-export const VERSION = '0.2.0'
+/**
+ * Version reported in the hello, so the hub can tell which device build is talking.
+ *
+ * Kept beside `package.json` rather than derived from it: the hello has to survive a profile whose package metadata
+ * is missing, and a device that cannot say what it is would be rejected. `tests/version.spec.ts` pins the two
+ * together, because this constant silently drifted three releases behind.
+ */
+export const VERSION = '0.3.0'
 
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
