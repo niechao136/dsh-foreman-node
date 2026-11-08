@@ -15,7 +15,7 @@ import type { SshKey } from '../keys.ts'
 import type { TestResult } from '../routes.ts'
 import { ENTRY_ID, ENTRY_ORDER } from './entry.ts'
 import { addressPreview, DEFAULT_SSH, editsOf, emptyFields, keyLabel, testMessage } from './page-state.ts'
-import type { PageForm } from './section.ts'
+import { Section, type FormController, type PageForm } from './section.ts'
 import { en, zh } from './locales.ts'
 
 /** The prefix the device's own routes answer under. */
@@ -106,6 +106,10 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
     } catch { setNotice(t('saveFailed')) }
   }
 
+  // `unavailable` is terminal, not a wait: the host has decided this client never gets the namespace (a remote browser
+  // in memory mode, or a profile that does not expose it). Rendering "reading configuration…" there leaves a person
+  // waiting for something that will not arrive, so it says so instead.
+  if (form?.state.status === 'unavailable') return <div data-foreman-node-page="unavailable">{t('unavailable')}</div>
   if (draft === undefined) return <div data-foreman-node-page="loading">{t('loading')}</div>
   const address = addressPreview(draft)
   const missing = emptyFields(draft, keepsToken)
@@ -235,10 +239,13 @@ export function apply(ctx: Context): void {
   ctx.inject(['configForms'], child => {
     const forms = (child as unknown as { configForms?: Partial<FormsFace> }).configForms
     if (forms?.get === undefined || forms.whileServed === undefined) return
-    const form = forms.get(ENTRY_ID) as PageForm & { subscribe(listener: () => void): () => void }
-    ctx.effect(() => forms.whileServed!([ENTRY_ID], () => child.slots.inject('settings.section', () =>
+    const form = forms.get(ENTRY_ID) as FormController
+    // The effect belongs to the injected fiber, not to this one. `ctx.inject` starts a child plugin; registering the
+    // watch on the outer context would leave the settings page alive after `configForms` goes away, holding a
+    // controller whose provider has been disposed.
+    child.effect(() => forms.whileServed!([ENTRY_ID], () => child.slots.inject('settings.section', () =>
       child.slots.register({ name: 'settings.section', id: ENTRY_ID, order: ENTRY_ORDER, label: () => t('nav'),
-        locale: NS }, () => <Mounted t={t} form={form as never} />))), 'dsh-foreman-node: settings page')
+        locale: NS }, () => <Section form={form} t={t} />))), 'dsh-foreman-node: settings page')
   })
 }
 

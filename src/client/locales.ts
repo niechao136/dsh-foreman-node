@@ -41,6 +41,7 @@ export const zh = {
   saveFailed: '保存失败。',
   readOnly: '这个宿主不提供配置写入，请手工编辑 profile 的 cordis.patch.yml。',
   loading: '读取配置…',
+  unavailable: '这个宿主不提供配置读取（可能是远程浏览器，或该 profile 未启用设置服务），请手工编辑 profile 的 cordis.patch.yml。',
   missing: '还需要填：',
 }
 
@@ -86,6 +87,7 @@ export const en: typeof zh = {
   saveFailed: 'Could not save.',
   readOnly: "This host does not accept configuration writes; edit the profile's cordis.patch.yml by hand.",
   loading: 'Reading configuration…',
+  unavailable: 'This host does not expose configuration reads (a remote browser, or a profile without the settings service). Edit the profile\'s cordis.patch.yml by hand.',
   missing: 'Still needed: ',
 }
 

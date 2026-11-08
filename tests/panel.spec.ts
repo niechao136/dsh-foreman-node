@@ -80,3 +80,13 @@ it('waits instead of showing an empty form while the host has not published the 
   expect(markup).toContain(zh.loading)
   expect(markup).not.toContain('data-node-save')
 })
+
+it('says the host exposes no configuration instead of waiting forever', () => {
+  // `unavailable` is terminal: the namespace will never arrive on this client. A page that showed the loading line
+  // there would look like a slow host rather than a wrong one.
+  const unavailable = { state: { status: 'unavailable' as const, value: undefined, base: undefined, user: undefined,
+    revision: undefined, writable: false, mode: 'memory' as const }, mutate: async () => true }
+  const markup = renderToStaticMarkup(createElement(DevicePage, { t, form: unavailable } as never))
+  expect(markup).toContain('data-foreman-node-page="unavailable"')
+  expect(markup).not.toContain(zh.loading)
+})
