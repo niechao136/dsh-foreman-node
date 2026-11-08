@@ -313,3 +313,23 @@ describe('the permission a job runs under', () => {
     expect(JOB_PRESET).toBe('workspace-write')
   })
 })
+
+it('falls back to the default preset when the configured one does not exist on this host', async () => {
+  // A preset name is configuration, and configuration can be wrong: the host's table moved, or someone typed it.
+  // That must not be the reason a job never starts — the work is still worth doing under the default.
+  const presets: string[] = []
+  const ctx = {
+    workspaceRegistry: { create: async (cwd: string) => ({ id: cwd, attachSession: async () => {} }), list: () => [], get: () => undefined },
+    sessionController: { resolveAgent: async (sessionId: string) => ({ agent: { id: sessionId, session: { id: sessionId, header: {} },
+      inbox: { nextTurn: [], nextStep: [] }, ctx: { tools: { register: () => ({ dispose: () => {} }) } } } }),
+      create: async () => {}, rename: async () => {} },
+    permissionPresets: { set: (_s: unknown, preset: string) => {
+      if (preset === 'does-not-exist') throw new Error('unknown preset')
+      presets.push(preset) } },
+    logger: { warn: vi.fn(), info: vi.fn() },
+    sessionPersistence: { flush: async () => {}, open: async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }) },
+  }
+  const jobs = new JobSessions(ctx as never, 'does-not-exist')
+  await expect(jobs.ensure({ assignmentId: 'f1', directory: '/w', title: 'job f1' })).resolves.toBeTruthy()
+  expect(presets).toEqual([JOB_PRESET])
+})

@@ -98,8 +98,16 @@ export class JobSessions {
     }
     if ('error' in result) throw result.error
     await workspace.attachSession(id as SessionId)
-    // The one place the device's policy differs from the hub's: bounded, because no person is here to approve more.
-    this.ctx.permissionPresets.set(result.agent.session, this.preset)
+    // The one place the device's policy differs from the hub's. A preset name that the host does not have must not
+    // kill the job: a person configured it, the host's table moved, and the work is still worth doing under the
+    // default. Failing here surfaced as 'the query could not start' with the real reason three layers away.
+    try { this.ctx.permissionPresets.set(result.agent.session, this.preset) }
+    catch (error) {
+      this.ctx.logger.warn('dsh-foreman-node: this host has no permission preset %s, so the job runs under %s (%s)',
+        this.preset, JOB_PRESET, String(error))
+      try { this.ctx.permissionPresets.set(result.agent.session, JOB_PRESET) }
+      catch (fallback) { this.ctx.logger.warn('dsh-foreman-node: could not set any preset: %s', String(fallback)) }
+    }
     await this.ctx.sessionController.rename({ sessionId: id as SessionId, title: input.title })
     if (onReport !== undefined && !this.reported.has(input.assignmentId)) {
       this.reported.add(input.assignmentId)
