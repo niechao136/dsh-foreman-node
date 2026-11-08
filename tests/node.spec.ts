@@ -224,3 +224,68 @@ describe('starting the device', () => {
     expect(dialled).not.toContain('wss://ignored.example')
   })
 })
+
+describe('a job that ends without reporting', () => {
+  /** A host whose Session records listeners, so a test can drive `turn/end` itself. */
+  function hostFor(history: unknown[]) {
+    const listeners: ((session: unknown, event: unknown) => void)[] = []
+    type Execute = ((args: unknown, execution: unknown) => Promise<unknown>) | undefined
+    const toolCtx: { execute: Execute; tools: { register: (d: { execute: Execute }) => { dispose: () => void } }
+      effect: (fn: () => () => void) => () => void
+      on: (name: string, listener: (session: unknown, event: unknown) => void) => () => void } = {
+      execute: undefined,
+      tools: { register: (definition: { execute: Execute }) => { toolCtx.execute = definition.execute; return { dispose: () => {} } } },
+      effect: (fn: () => () => void) => { fn(); return () => {} },
+      on: (name: string, listener: (session: unknown, event: unknown) => void) => {
+        if (name === 'session/event') listeners.push(listener)
+        return () => {}
+      },
+    }
+    const ctx = {
+      workspaceRegistry: { create: async (cwd: string) => ({ id: cwd, attachSession: async () => {} }), list: () => [], get: () => undefined },
+      sessionController: {
+        resolveAgent: async (sessionId: string) => ({ agent: { id: sessionId, session: { id: sessionId, header: {} },
+          inbox: { nextTurn: [], nextStep: [] }, ctx: toolCtx } }),
+        create: async () => {}, rename: async () => {},
+      },
+      permissionPresets: { set: () => {} },
+      logger: { warn: vi.fn(), info: vi.fn() },
+      sessionPersistence: { flush: async () => {},
+        open: async () => ({ read: async (offset: number) => offset === 0 ? { events: history } : { events: [] },
+          [Symbol.asyncDispose]: async () => {} }) },
+    }
+    return { ctx, listeners, toolCtx }
+  }
+
+  it('is closed out as ready with the last thing the model said', async () => {
+    // A real device did thirty steps of work and never called foreman_report, so the hub waited at `running`
+    // forever. The tool alone does not guarantee a call; the turn ending has to close the job out.
+    const history = [
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'first thought' }] } } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'the projects are dsh-foreman and dsh-foreman-node' }] } } },
+    ]
+    const { ctx, listeners } = hostFor(history)
+    const reported: { assignmentId: string; report: { state: string; summary: string } }[] = []
+    const jobs = new JobSessions(ctx as never)
+    const sessionId = await jobs.ensure({ assignmentId: 'a1', directory: '/w', title: 'job a1' },
+      (assignmentId, report) => { reported.push({ assignmentId, report }) })
+    for (const listener of listeners) listener({ id: sessionId }, { type: 'turn/end' })
+    await vi.waitFor(() => expect(reported).toHaveLength(1))
+    expect(reported[0]!.assignmentId).toBe('a1')
+    expect(reported[0]!.report.state).toBe('ready')
+    expect(reported[0]!.report.summary).toContain('the projects are dsh-foreman')
+  })
+
+  it('does not report again for a job that already reported through the tool', async () => {
+    const { ctx, listeners, toolCtx } = hostFor([{ type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } }])
+    const reported: { summary: string }[] = []
+    const jobs = new JobSessions(ctx as never)
+    const sessionId = await jobs.ensure({ assignmentId: 'a2', directory: '/w', title: 'job a2' },
+      (_id, report) => { reported.push(report) })
+    await toolCtx.execute!({ state: 'ready', summary: 'reported properly' }, { signal: new AbortController().signal })
+    for (const listener of listeners) listener({ id: sessionId }, { type: 'turn/end' })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(reported).toHaveLength(1)
+    expect(reported[0]!.summary).toBe('reported properly')
+  })
+})

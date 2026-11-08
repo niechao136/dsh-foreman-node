@@ -60,6 +60,8 @@ export class JobSessions {
   private readonly jobs = new Map<string, string>()
   /** Assignments whose Session already carries the report tool, so a redelivered assign registers it only once. */
   private readonly reported = new Set<string>()
+  /** Assignments that have actually reported; a turn ending without one is closed out by `watchTurnEnd`. */
+  private readonly reports = new Set<string>()
 
   constructor(private readonly ctx: Context) {}
 
@@ -147,10 +149,64 @@ export class JobSessions {
   /** Attach the `foreman_report` tool to a job Session, disposed with it. */
   reportTools(agent: Agent, assignmentId: string, onReport: (assignmentId: string, report: DeviceReport) => void): void {
     const registrar = agent.ctx.tools
-    const tool = foremanReportTool({ report: onReport }, assignmentId)
+    // Wrap the reporter so this Session's own turn ending can tell whether a report ever went out.
+    const reported = this.reports
+    const report = (id: string, deviceReport: DeviceReport): void => { reported.add(id); onReport(id, deviceReport) }
+    const tool = foremanReportTool({ report }, assignmentId)
     registrar.register({ name: tool.name, description: tool.description, parameters: tool.parameters,
       output: { schema: { type: 'object', additionalProperties: true },
         render: (_args: unknown, value: unknown) => [{ type: 'text' as const, text: JSON.stringify(value) }] },
       execute: (args: unknown, execution: { signal: AbortSignal }) => tool.execute(args as Record<string, unknown>, execution) })
+    this.watchTurnEnd(agent, assignmentId, report)
+  }
+
+  /**
+   * Report for a job that ended without calling the tool.
+   *
+   * Telling the model to report is not a guarantee: on a real deployment a device did the work, wrote a complete
+   * answer, and never called `foreman_report`, so the hub waited at `running` forever. The tool alone leaves that
+   * failure open, so a turn that ends with no report is closed out here — `ready`, with the last thing the model said
+   * as the summary. A person still gets the result; the ledger still learns the job ended.
+   */
+  private watchTurnEnd(agent: Agent, assignmentId: string, report: (id: string, r: DeviceReport) => void): void {
+    // The watcher is a safety net, not part of the tool: a host that cannot register it must still get the tool,
+    // because a job with no reporting channel at all is worse than one whose turn end is not observed.
+    if (typeof agent.ctx.effect !== 'function') return
+    agent.ctx.effect(() => {
+      const dispose = agent.ctx.on('session/event', (session, event) => {
+        if (session.id !== agent.session.id || event.type !== 'turn/end') return
+        if (this.reports.has(assignmentId)) return
+        // Reading the history is best effort: an unreadable history still closes the job out, because leaving the
+        // hub at `running` forever is the worse failure.
+        void this.lastText(agent).then(text => {
+          if (this.reports.has(assignmentId)) return
+          report(assignmentId, { state: 'ready', summary: text === '' ? 'the job finished without a report' : text.slice(0, 600) })
+        }, () => {
+          if (this.reports.has(assignmentId)) return
+          report(assignmentId, { state: 'ready', summary: 'the job finished without a report' })
+        })
+      })
+      return () => { void dispose }
+    })
+  }
+
+  /** The last text the assistant said in a Session, read from its stored history. */
+  private async lastText(agent: Agent): Promise<string> {
+    await this.ctx.sessionPersistence.flush()
+    await using handle = await this.ctx.sessionPersistence.open(agent.id, 'read')
+    let found = ''
+    for (let offset = 0; ;) {
+      const { events } = await handle.read(offset, 512)
+      if (events.length === 0) break
+      for (const event of events) {
+        if (event.type !== 'assistant/message') continue
+        const parts = (event.data as unknown as { message?: { content?: readonly { type?: string; text?: string }[] } })
+          ?.message?.content ?? []
+        const text = parts.filter(part => part?.type === 'text').map(part => part.text ?? '').join(' ').trim()
+        if (text !== '') found = text
+      }
+      offset += events.length
+    }
+    return found
   }
 }
