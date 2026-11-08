@@ -1,5 +1,6 @@
 /** The device page's own words; the host renders them through its locale service. */
 export const zh = {
+  nav: '设备连接',
   title: '设备连接',
   intro: '这台机器用自己的密钥连上枢纽，隧道也由它自己开。填完保存后重启一次 DSH 生效。',
   keysSection: '密钥',
@@ -44,6 +45,7 @@ export const zh = {
 }
 
 export const en: typeof zh = {
+  nav: 'Device connection',
   title: 'Device connection',
   intro: 'This machine reaches the hub with its own key and opens its own tunnel. Save, then restart DSH once.',
   keysSection: 'Key',

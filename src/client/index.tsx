@@ -10,10 +10,10 @@ import { useEffect, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
-import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import { configured, type NodeConfig } from '../config.ts'
 import type { SshKey } from '../keys.ts'
 import type { TestResult } from '../routes.ts'
+import { ENTRY_ID, ENTRY_ORDER } from './entry.ts'
 import { addressPreview, DEFAULT_SSH, editsOf, emptyFields, keyLabel, testMessage } from './page-state.ts'
 import type { PageForm } from './section.ts'
 import { en, zh } from './locales.ts'
@@ -196,23 +196,50 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed }: {
   </div>
 }
 
-/** The page as the Plugin Manager mounts it: locale and form come from the host. */
-interface PageProps extends PluginConfigViewProps {
+/**
+ * The page as DSH mounts it.
+ *
+ * The page itself is `DevicePage`; this is only the shell that hands it a translator. The settings section supplies
+ * the form, which is why nothing here reads configuration.
+ */
+function Mounted({ t, form, initialKeys, keysFailed }: {
   t: (key: keyof typeof zh) => string
+  form?: PageForm | undefined
+  initialKeys?: readonly SshKey[]
+  keysFailed?: boolean
+}) {
+  // The settings section is the only entry now, so there is no `view` to branch on: `summary` used to render nothing
+  // for the plugin manager's row list, and that page no longer mounts this.
+  return <DevicePage t={t} form={form} initialKeys={initialKeys} keysFailed={keysFailed} />
 }
 
-function Mounted({ t, view, form = undefined }: PageProps) {
-  // A summary row gets nothing: the full page belongs to the page view, and DSH's own config form shows the summary.
-  return view === 'summary' ? null : <DevicePage t={t} form={form} />
+/** What the settings provider's `configForms` service offers this page. */
+interface FormsFace {
+  get(id: string): unknown
+  whileServed(namespaces: readonly string[], register: () => () => void): () => void
 }
 
-/** Registers the page for the `dsh-foreman-node` row. */
+/**
+ * Registers the page in the settings panel.
+ *
+ * Two nested waits, both deliberate:
+ *  - `ctx.inject(['configForms'], …)` rather than a module-level `inject`: a profile without ui-settings has no
+ *    settings panel, and declaring the service would park the whole package waiting for something that profile never
+ *    provides. A headless device must still take work.
+ *  - `whileServed` rather than an immediate registration: the Host publishes configuration namespaces as it composes
+ *    them, so a page mounted before `dsh-foreman-node` appears in that list would render against nothing.
+ */
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-foreman-node: dictionaries')
   const t = ctx.locale.bind(NS) as unknown as (key: keyof typeof zh) => string
-  ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-    name: 'plugins.row.config', key: 'dsh-foreman-node#dsh-foreman-node', locale: NS },
-  (props: PluginConfigViewProps) => <Mounted {...props} t={(props as { t?: typeof t }).t ?? t} />))
+  ctx.inject(['configForms'], child => {
+    const forms = (child as unknown as { configForms?: Partial<FormsFace> }).configForms
+    if (forms?.get === undefined || forms.whileServed === undefined) return
+    const form = forms.get(ENTRY_ID) as PageForm & { subscribe(listener: () => void): () => void }
+    ctx.effect(() => forms.whileServed!([ENTRY_ID], () => child.slots.inject('settings.section', () =>
+      child.slots.register({ name: 'settings.section', id: ENTRY_ID, order: ENTRY_ORDER, label: () => t('nav'),
+        locale: NS }, () => <Mounted t={t} form={form as never} />))), 'dsh-foreman-node: settings page')
+  })
 }
 
 export { DevicePage }
