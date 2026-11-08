@@ -59,6 +59,8 @@ const ConfigSchema = s.object({
     localPort: s.natural().min(1).max(65535).default(8790).volatile().description('The local port the tunnel listens on; the device dials this.'),
   }).default({ enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 })
     .description('How to reach the hub when it is not directly reachable: a tunnel this device opens and keeps open.'),
+  jobPreset: s.string().default('workspace-write').volatile()
+    .description('The permission preset a job runs under. Use one that keeps the workspace boundary and never asks, because nobody is at this machine to answer.'),
 })
 /**
  * Why every field is volatile.
@@ -154,7 +156,7 @@ export async function apply(ctx: Context, raw: ConfigInput): Promise<void> {
     ctx.logger.info('%s', missing)
     return
   }
-  const jobs = new JobSessions(ctx)
+  const jobs = new JobSessions(ctx, config.jobPreset)
   const client = new NodeClient({
     url: hubUrlOf(config),
     deviceId: config.deviceId,

@@ -25,7 +25,14 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-/** The permission preset a job runs under: bounded to the directory the device declared. */
+/**
+ * The permission preset a job runs under when the device's configuration names none.
+ *
+ * Bounded to the directory the device declared. A job on a machine with nobody in front of it cannot answer an
+ * approval prompt, so the useful alternative is not a wider sandbox but a quiet one: a preset that keeps this
+ * boundary and never asks. That is the device operator's decision, taken in their own configuration, because it is
+ * their machine and their risk.
+ */
 export const JOB_PRESET = 'workspace-write'
 
 /** The Session a job runs in, named the way a hub names its own worker: `job-<assignmentId>`. */
@@ -63,7 +70,12 @@ export class JobSessions {
   /** Assignments that have actually reported; a turn ending without one is closed out by `watchTurnEnd`. */
   private readonly reports = new Set<string>()
 
-  constructor(private readonly ctx: Context) {}
+  /**
+   * @param preset the permission preset a job runs under. The device operator chooses it in their own configuration:
+   *   a machine with nobody in front of it cannot answer an approval prompt, so the useful choice is usually a preset
+   *   that keeps the workspace boundary and never asks.
+   */
+  constructor(private readonly ctx: Context, private readonly preset: string = JOB_PRESET) {}
 
   /**
    * Resolve or create the `job-<assignmentId>` Session in the given directory, attach its `foreman_report` tool, and
@@ -87,7 +99,7 @@ export class JobSessions {
     if ('error' in result) throw result.error
     await workspace.attachSession(id as SessionId)
     // The one place the device's policy differs from the hub's: bounded, because no person is here to approve more.
-    this.ctx.permissionPresets.set(result.agent.session, JOB_PRESET)
+    this.ctx.permissionPresets.set(result.agent.session, this.preset)
     await this.ctx.sessionController.rename({ sessionId: id as SessionId, title: input.title })
     if (onReport !== undefined && !this.reported.has(input.assignmentId)) {
       this.reported.add(input.assignmentId)

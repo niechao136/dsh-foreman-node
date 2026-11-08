@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { JobSessions } from '../src/session.ts'
+import { JOB_PRESET, JobSessions } from '../src/session.ts'
 import { foremanReportTool } from '../src/report-tool.ts'
 import { parseFrame } from '../src/protocol.ts'
 import { apply, Config, configured, hubUrlOf, missingConfiguration, SSH_DEFAULTS } from '../src/index.ts'
@@ -287,5 +287,29 @@ describe('a job that ends without reporting', () => {
     await new Promise(resolve => setTimeout(resolve, 40))
     expect(reported).toHaveLength(1)
     expect(reported[0]!.summary).toBe('reported properly')
+  })
+})
+
+describe('the permission a job runs under', () => {
+  it('uses the preset the device configured, not a hard-coded one', async () => {
+    // A device has nobody in front of it, so a preset that asks stops the work instead of protecting it. The operator
+    // chooses a quiet preset on their own machine; the plugin must honour it.
+    const presets: string[] = []
+    const ctx = {
+      workspaceRegistry: { create: async (cwd: string) => ({ id: cwd, attachSession: async () => {} }), list: () => [], get: () => undefined },
+      sessionController: { resolveAgent: async (sessionId: string) => ({ agent: { id: sessionId, session: { id: sessionId, header: {} },
+        inbox: { nextTurn: [], nextStep: [] }, ctx: { tools: { register: () => ({ dispose: () => {} }) } } } }),
+        create: async () => {}, rename: async () => {} },
+      permissionPresets: { set: (_session: unknown, preset: string) => { presets.push(preset) } },
+      logger: { warn: vi.fn(), info: vi.fn() },
+      sessionPersistence: { flush: async () => {}, open: async () => ({ read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }) },
+    }
+    const jobs = new JobSessions(ctx as never, 'workspace-write-never-ask')
+    await jobs.ensure({ assignmentId: 'p1', directory: '/w', title: 'job p1' })
+    expect(presets).toEqual(['workspace-write-never-ask'])
+  })
+
+  it('still defaults to workspace-write when the device names no preset', () => {
+    expect(JOB_PRESET).toBe('workspace-write')
   })
 })

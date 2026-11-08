@@ -49,6 +49,14 @@ export interface NodeConfig {
   reconnectMs: number
   /** How to reach a hub that is not directly reachable. */
   ssh: SshConfig
+  /**
+   * The permission preset a job runs under.
+   *
+   * Defaults to `workspace-write`, which is bounded to the declared directory but asks before leaving it. A device has
+   * nobody sitting in front of it, so a question that stops the job is worse than it looks: the work simply hangs.
+   * Configure a preset that keeps the boundary and never asks — that is the operator's call, on their own machine.
+   */
+  jobPreset: string
 }
 
 /** The SSH defaults, spread over whatever the host hands in, so a partial block is still complete. */
@@ -95,6 +103,7 @@ export function configured(config: object | undefined): NodeConfig {
   return { url: valueOf(source['url'] as string, ''), deviceId: valueOf(source['deviceId'] as string, ''),
     token: valueOf(source['token'] as string, ''), roots: valueOf(source['roots'] as NodeRoot[], []),
     heartbeatMs: valueOf(source['heartbeatMs'] as number, 15_000), reconnectMs: valueOf(source['reconnectMs'] as number, 1_000),
+    jobPreset: valueOf(source['jobPreset'] as string, 'workspace-write'),
     // `ssh` holds volatile fields too, so each one is unwrapped like the top level.
     ssh: { ...SSH_DEFAULTS, ...unwrapSsh(source['ssh']) } }
 }
