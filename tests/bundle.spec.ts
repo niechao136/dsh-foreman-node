@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { assertEntryId, ENTRY_ID } from '../src/client/entry.ts'
 
 const bundlePath = join(import.meta.dirname, '..', 'lib', 'client.js')
 
@@ -33,4 +34,18 @@ it('never reaches for a Node-only module', () => {
   for (const forbidden of ['node:net', 'node:child_process', 'node:fs', 'node:os', 'node:path']) {
     expect(source).not.toContain(forbidden)
   }
+})
+
+it('keeps the settings entry named after the row the profile actually declares', () => {
+  // A mismatch here has no compile-time symptom and no runtime error: the page would simply stay on "reading
+  // configuration" forever, because `configForms` keys forms by the patch row's id.
+  const patch = readFileSync(join(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8')
+  expect(assertEntryId(patch)).toBe(ENTRY_ID)
+})
+
+it('no longer registers the plugin-manager page it used to mount', () => {
+  // The slot name survives in the bundle only as a string constant; a leftover registration would mean two forms
+  // editing one namespace, which is the arrangement that lets a save from one overwrite the other's fields.
+  const source = readFileSync(bundlePath, 'utf8')
+  expect(source).not.toContain('plugins.row.config')
 })
