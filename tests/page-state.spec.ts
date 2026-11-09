@@ -1,10 +1,12 @@
 /** What the device's configuration page decides, without a DOM. */
 import { expect, it } from 'vitest'
 import type { NodeConfig } from '../src/index.ts'
-import { addressPreview, DEFAULT_SSH, editsOf, emptyFields, keyLabel, needsToken, testMessage } from '../src/client/page-state.ts'
+import { accessAddresses, addressPreview, DEFAULT_EXPOSE, DEFAULT_SSH, editsOf, emptyFields, keepaliveMissing,
+  keyLabel, needsToken, portVerdict, testMessage } from '../src/client/page-state.ts'
 
 const config = (overrides: Partial<NodeConfig> = {}): NodeConfig =>
-  ({ url: '', deviceId: '', token: '', roots: [], heartbeatMs: 15_000, reconnectMs: 1_000, ssh: { ...DEFAULT_SSH }, ...overrides }) as NodeConfig
+  ({ url: '', deviceId: '', token: '', roots: [], heartbeatMs: 15_000, reconnectMs: 1_000, ssh: { ...DEFAULT_SSH },
+    expose: { ...DEFAULT_EXPOSE }, jobPreset: 'workspace-write', ...overrides }) as NodeConfig
 
 it('labels a key by its comment, and by nothing else when it has none', () => {
   expect(keyLabel({ name: 'id_ed25519', path: '/k', comment: 'me@laptop' })).toBe('id_ed25519 · me@laptop')
@@ -96,4 +98,59 @@ it('keeps the ports as numbers, which the schema demands', () => {
   expect(value('ssh.port')).toBe(2222)
   expect(value('ssh.localPort')).toBe(8791)
   expect(value('ssh.remotePort')).toBe(8790)
+  expect(value('expose.remotePort')).toBe(DEFAULT_EXPOSE.remotePort)
+})
+
+it('writes the publishing block one field at a time, with its defaults filled in', () => {
+  // A section saved before this block existed has no `expose` at all, so a root write of `undefined` would erase it.
+  const edits = editsOf(config({ expose: { enabled: true, remotePort: 13100 } }))
+  const value = (path: string) => edits.find(edit => edit.path.join('.') === path)?.value
+  expect(value('expose.enabled')).toBe(true)
+  expect(value('expose.remotePort')).toBe(13100)
+  expect(edits.every(edit => edit.path.length > 0)).toBe(true)
+})
+
+it('writes the job preset, which had a schema and no field', () => {
+  // Until this field existed the only way to set it was to edit the profile's patch by hand.
+  const edits = editsOf(config({ jobPreset: 'workspace-write-never-ask' }))
+  expect(edits.find(edit => edit.path.join('.') === 'jobPreset')?.value).toBe('workspace-write-never-ask')
+})
+
+it('leaves the job preset alone when the box is empty, rather than blanking it', () => {
+  expect(editsOf(config({ jobPreset: '  ' })).some(edit => edit.path.join('.') === 'jobPreset')).toBe(false)
+})
+
+it('spells out both addresses, and only one of them opens on this machine', () => {
+  const both = accessAddresses({ localPort: 65277, protocol: 'http:', token: 'tok',
+    expose: { enabled: true, remotePort: 13100 } })
+  // The local address carries the port DSH was actually given; the published one carries the hub's port.
+  expect(both.local).toBe('http://127.0.0.1:65277/?token=tok')
+  expect(both.published).toBe('http://127.0.0.1:13100/?token=tok')
+  // Publishing off means there is nothing on the hub to open.
+  expect(accessAddresses({ localPort: 65277, protocol: 'http:', token: 'tok',
+    expose: { enabled: false, remotePort: 13100 } }).published).toBeUndefined()
+})
+
+it('still gives an address when no token can be minted, instead of a broken link', () => {
+  const urls = accessAddresses({ localPort: 65277, protocol: 'https:', token: undefined,
+    expose: { enabled: false, remotePort: 13100 } })
+  expect(urls.local).toBe('https://127.0.0.1:65277/')
+  expect(accessAddresses({ localPort: undefined, protocol: 'http:', token: 't',
+    expose: { enabled: false, remotePort: 13100 } }).local).toBeUndefined()
+})
+
+it('keeps "could not tell" apart from "free", and flags a hub that never probes an idle link', () => {
+  expect(portVerdict({ port: 'busy', clientAliveInterval: 30, output: '' })).toBe('busy')
+  expect(portVerdict({ port: 'unknown', clientAliveInterval: 30, output: 'x' })).toBe('unknown')
+  // 0 means sshd never probes, so a dead device keeps the published port bound on the hub.
+  expect(keepaliveMissing({ port: 'free', clientAliveInterval: 0, output: '' })).toBe(true)
+  expect(keepaliveMissing({ port: 'free', clientAliveInterval: 30, output: '' })).toBe(false)
+})
+
+it('asks for the connection details publishing needs even when the tunnel is off', () => {
+  // The reverse forward is its own ssh process against the same hub; it needs the same four values.
+  const missing = emptyFields(config({ url: 'ws://h', deviceId: 'd', expose: { enabled: true, remotePort: 13100 } }), true)
+  expect(missing).toContain('ssh.host')
+  expect(missing).toContain('ssh.user')
+  expect(missing).toContain('ssh.keyPath')
 })

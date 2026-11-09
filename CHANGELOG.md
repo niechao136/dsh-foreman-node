@@ -1,3 +1,69 @@
+## 0.4.0 — 2026-11-09
+
+### 新增：把本机页面发布到枢纽
+
+隧道让这台机器够到枢纽；这个功能反过来，在枢纽上开一个端口，转发回这台机器的 DSH 页面。
+
+```
+ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -p <ssh.port> -i <ssh.keyPath> \
+    -R 127.0.0.1:<expose.remotePort>:127.0.0.1:<本机 Web 端口> <ssh.user>@<ssh.host>
+```
+
+- 本机端口在**每次尝试时**从 `ctx.webServer.port` 读，不写进配置：那个端口是操作系统启动时分配的，写死会在重启后转发到一个没人监听的端口。
+- 只绑 `127.0.0.1`，不依赖枢纽的 `GatewayPorts` 设置——枢纽的账本靠只监听 loopback 保护，这个页面不该成为那个口子。
+- 反向转发在本地没有端口可探测，就绪判定改为「进程活了 `readyMs` 且 stderr 没报 `remote port forwarding failed`」。
+- ssh 报这个错误时**不会退出**，所以 stderr 是流式读的：只靠 exit 事件会把「枢纽端口被占」报成正常工作。
+- 失败与设备接单完全隔离：发布不了只是没有页面，任务照收。
+
+### 新增：`expose` 配置块
+
+```yaml
+expose:
+  enabled: false      # 默认关
+  remotePort: 13100   # 用户自定义，不要用 8790（那是隧道端口）
+```
+
+全部字段 `.volatile()`，与 `ssh` 块同规则。
+
+### 新增：配置页显示访问地址
+
+两个地址，语义不同，页面上分开显示：
+
+| 地址 | 端口 | 在哪里打得开 |
+| --- | --- | --- |
+| 本机打开 | `ctx.webServer.port` | 只在这台机器上 |
+| 从枢纽打开 | `expose.remotePort` | 只在枢纽上 |
+
+令牌来自 `ctx.inject(['connection'], …)` → `connection.authenticatedUrl(base)`，**不读日志、不读凭据文件、不自签 cookie**。没有 `connection` 服务时只显示端口并说明拿不到令牌，不打印一条会撞到登录墙的链接。
+
+令牌每次启动重新生成（cookie 本身有效期 30 天），所以地址会随重启变化。
+
+### 新增：端口占用检查按钮
+
+「检查端口」通过一次 ssh 在枢纽上跑脚本，同时回答两件事：
+
+- `PORT=busy|free|unknown`：`ss` → `netstat` → `lsof` 依次尝试，三个都没有就是 `unknown`，**不当成 free**。
+- `CLIENTALIVE=<秒>`：先读 `sshd -T`（生效配置，覆盖 `Include`），读不到再读 `/etc/ssh/sshd_config`。
+
+占用时提示换一个——换端口不是可选的优化：枢纽端口变了，之前保存的 cookie 绑定的 authority 也就失效了。
+
+枢纽 `ClientAliveInterval` 为 0 时给出提示：断网后 sshd 不会主动断开那条死连接，发布的端口会一直占着，重连全部失败。**只提示，不改远端配置**——那个文件属于枢纽的管理员。
+
+### 修复：保存后不重启就生效
+
+以前 `apply()` 一路构造到底，`NodeClient` / `Tunnel` / `JobSessions` 都是构造时读一次配置，改完必须重启 DSH。
+
+现在监听 `loader/volatile-update`：DSH 对「只有 volatile 值变了」的保存**不重启插件**，而是把新值提交进运行中的引用，再发这个事件。收到就停掉旧的一套、按新配置重新起一套。
+
+- 会话不强制重建：`jobPreset` 的改动作用于之后新创建的会话。
+- 首次保存（之前完全没配置）也会真的启动设备——这正是新装 profile 打开配置页的情形。
+
+### 新增：配置页补「默认对话策略」
+
+`jobPreset` 一直有 schema、有类型，但配置页从来没渲染过，只能手改 `cordis.patch.yml`。现在有栏位了，留空表示用默认的 `workspace-write`。
+
 ## 0.3.0 — 2026-11-08
 
 ### 配置页搬进设置

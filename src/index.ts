@@ -15,11 +15,25 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { NodeClient } from './client.ts'
-import { configured, SSH_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig } from './config.ts'
-import { registerNodeRoutes, type RouteHost } from './routes.ts'
+import { configured, EXPOSE_DEFAULTS, SSH_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig } from './config.ts'
+import { Expose } from './expose.ts'
+import { registerNodeRoutes, type AccessAnswer, type RouteHost } from './routes.ts'
 import { Tunnel } from './tunnel.ts'
 import { JobSessions } from './session.ts'
 import type { Frame } from './protocol.ts'
+
+/**
+ * DSH's loader publishes this when a save changes only volatile values.
+ *
+ * Declared here rather than imported from `@deepseek-ai/dsh-loader`: the device package depends on nothing but the
+ * host's own session services, and an install that pulled the loader in would be depending on the composition root
+ * to tell it about its own configuration. The event carries the changed paths; this plugin rebuilds on any of them.
+ */
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'loader/volatile-update'(paths: readonly (readonly string[])[]): void
+  }
+}
 
 /**
  * Version reported in the hello, so the hub can tell which device build is talking.
@@ -28,7 +42,7 @@ import type { Frame } from './protocol.ts'
  * is missing, and a device that cannot say what it is would be rejected. `tests/version.spec.ts` pins the two
  * together, because this constant silently drifted three releases behind.
  */
-export const VERSION = '0.3.0'
+export const VERSION = '0.4.0'
 
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
@@ -65,6 +79,15 @@ const ConfigSchema = s.object({
     localPort: s.natural().min(1).max(65535).default(8790).volatile().description('The local port the tunnel listens on; the device dials this.'),
   }).default({ enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 })
     .description('How to reach the hub when it is not directly reachable: a tunnel this device opens and keeps open.'),
+  // Same per-field volatility as `ssh`, and the same reason: `isVolatilePath` walks into the block, so one
+  // unmarked child makes the whole section unwritable and the page reports "could not save".
+  expose: s.object({
+    enabled: s.boolean().default(false).volatile()
+      .description('Publish this machine\'s own DSH page on the hub, so a browser there can open it.'),
+    remotePort: s.natural().min(1).max(65535).default(13100).volatile()
+      .description('The port the hub should listen on, on its own loopback. Use the check button: a port the hub already has makes the forward fail on every attempt.'),
+  }).default({ enabled: false, remotePort: 13100 })
+    .description('Publishing this machine\'s web page on the hub. Off by default: a device takes work without it.'),
   jobPreset: s.string().default('workspace-write').volatile()
     .description('The permission preset a job runs under. Use one that keeps the workspace boundary and never asks, because nobody is at this machine to answer.'),
 })
@@ -136,6 +159,21 @@ export const name = 'dsh-foreman-node'
 export const inject = ['sessionController', 'sessionPersistence', 'workspaceRegistry', 'permissionPresets', 'tools', 'agents']
 
 /**
+ * The parts of the device that are built from configuration and torn down when it changes.
+ *
+ * They are one object rather than three locals because the thing that changes is the configuration and all three
+ * read it: a save that reconnected the tunnel but left the client dialling the old address would look like a hub
+ * that stopped answering. `stop` is idempotent so a rebuild and a disposal can both call it.
+ */
+interface Running {
+  jobs: JobSessions
+  client: NodeClient
+  tunnel: Tunnel | undefined
+  expose: Expose | undefined
+  stop(): void
+}
+
+/**
  * Start the device.
  *
  * A package that has just been installed has its row in the profile patch with no values in it yet. Activating
@@ -144,10 +182,16 @@ export const inject = ['sessionController', 'sessionPersistence', 'workspaceRegi
  *
  * The plugin returns once the connection is attempted, not once it succeeds: a device must boot and stay usable
  * while its hub is unreachable, and the client keeps retrying in the background.
+ *
+ * Everything built from `con` is rebuilt when `con` changes, which is why the work lives in `start`. Every field is
+ * volatile, so DSH commits a save into these references and emits `loader/volatile-update` instead of restarting the
+ * plugin — the page's "restart DSH" line was true only because nothing listened. A save that arrives while the
+ * device is still unconfigured must also start it, which is the case a page in a fresh profile produces.
  */
 export async function apply(ctx: Context, raw: ConfigInput): Promise<void> {
-  // Every field is volatile, so `raw` holds wrappers; everything below wants plain values.
-  const config = configured(raw)
+  // The configuration references themselves: every field is volatile, so this object holds live references and
+  // `configured` reads the current values out of them at the moment a run starts.
+  const con = raw
   // The configuration page has to work on a device that is not configured yet — that is precisely when someone opens
   // it — so the routes go up before the check below, not after it. `webServer` is injected optionally rather than
   // listed in `inject`: a headless or CLI DSH has no web server and must still take work, losing only the page.
@@ -155,13 +199,32 @@ export async function apply(ctx: Context, raw: ConfigInput): Promise<void> {
     // The service shape is declared locally rather than imported from `@deepseek-ai/dsh-host-webserver`: the device
     // package stays thin, and this plugin needs two members of that service, not its whole surface.
     const host = (child as unknown as { webServer: RouteHost }).webServer
-    child.effect(() => registerNodeRoutes(host, sshDirectory()))
+    child.effect(() => registerNodeRoutes(host, sshDirectory(), undefined, () => accessOf(child, host)))
   })
-  const missing = missingConfiguration(config)
-  if (missing !== undefined) {
-    ctx.logger.info('%s', missing)
-    return
+  let running: Running | undefined
+  const stop = (): void => { running?.stop(); running = undefined }
+  const start = (): void => {
+    stop()
+    const config = configured(con as unknown as object)
+    const missing = missingConfiguration(config)
+    if (missing !== undefined) {
+      ctx.logger.info('%s', missing)
+      return
+    }
+    running = run(ctx, config)
   }
+  start()
+  // A save does not restart this plugin: every field is volatile, so DSH commits the new values into `con` and tells
+  // the owning fiber which paths changed. Rebuilding here is what makes a save take effect without a restart — and it
+  // is the only notification that arrives, because the ordinary update path is exactly the one DSH skips for a
+  // volatile-only change. `internal/update` is therefore not listened to: it never fires for this plugin, and
+  // reacting to it would restart the device a second time on any change that did.
+  ctx.on('loader/volatile-update', () => { start() })
+  ctx.effect(() => stop)
+}
+
+/** Build, start and describe one run of the device from a complete configuration. */
+function run(ctx: Context, config: NodeConfig): Running {
   const jobs = new JobSessions(ctx, config.jobPreset)
   const client = new NodeClient({
     url: hubUrlOf(config),
@@ -186,8 +249,46 @@ export async function apply(ctx: Context, raw: ConfigInput): Promise<void> {
     : undefined
   if (tunnel === undefined) client.start()
   else tunnel.start()
-  ctx.effect(() => () => { tunnel?.stop(); client.stop() })
+  // Publishing this machine's page is the other direction and its own process. A hub that refuses the port costs
+  // the device its page, never its work, so this is started beside the connection and not in front of it.
+  const expose = config.expose.enabled
+    ? new Expose({ ssh: config.ssh, remotePort: config.expose.remotePort, localPort: () => ctx.get('webServer')?.port,
+      log: text => ctx.logger.warn('%s', text),
+      onState: (state, failure) => {
+        ctx.logger.info('dsh-foreman-node expose: %s', failure === undefined ? state : `${state} (${failure})`)
+      } })
+    : undefined
+  expose?.start()
   ctx.logger.info('dsh-foreman-node %s is dialling %s as %s', VERSION, hubUrlOf(config), config.deviceId)
+  return { jobs, client, tunnel, expose, stop: () => { expose?.stop(); tunnel?.stop(); client.stop() } }
+}
+
+/**
+ * The port, scheme and token this machine's page can be opened with.
+ *
+ * The token is asked of the connection service rather than read from anywhere: it is minted per process, held
+ * privately, and `authenticatedUrl` already knows how to put it in a URL while preserving the authority and mount.
+ * Reading a credential file or a log would be a second, worse implementation of the same thing — and on a host with
+ * no connection service (headless, CLI) there is no token at all, which is what `token: undefined` reports.
+ */
+export function accessOf(child: Context, host: RouteHost): AccessAnswer {
+  const protocol = host.protocol === 'https:' ? 'https:' : 'http:'
+  const port = ctxPort(child) ?? (typeof host.port === 'number' ? host.port : undefined)
+  const token = (() => {
+    try {
+      const url = child.get('connection')?.authenticatedUrl?.(`${protocol}//127.0.0.1:${String(port ?? 0)}`)
+      return typeof url === 'string' ? new URL(url).searchParams.get('token') ?? undefined : undefined
+    } catch { return undefined }
+  })()
+  return { localPort: port, protocol, token }
+}
+
+/** The web server's own port, read defensively: a service that is not there yet must not break the page. */
+function ctxPort(ctx: Context): number | undefined {
+  try {
+    const port = (ctx.get('webServer') as { port?: unknown } | undefined)?.port
+    return typeof port === 'number' && Number.isInteger(port) && port > 0 ? port : undefined
+  } catch { return undefined }
 }
 
 /** The directory the key list reads; `~/.ssh` on a machine where the current user is the one configuring it. */
@@ -235,11 +336,12 @@ async function receive(ctx: Context, jobs: JobSessions, client: NodeClient, fram
   }
 }
 
-export { configured, SSH_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig } from './config.ts'
+export { configured, SSH_DEFAULTS, EXPOSE_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig, type ExposeConfig } from './config.ts'
+export { Expose, exposeArgs, explainExpose, forwardRefused } from './expose.ts'
 export { NodeClient } from './client.ts'
 export { Tunnel, tunnelArgs } from './tunnel.ts'
 export { listKeys } from './keys.ts'
-export { registerNodeRoutes, testArgs } from './routes.ts'
+export { registerNodeRoutes, testArgs, portCheckArgs, portCheckScript, parsePortCheck, type AccessAnswer, type PortCheckAnswer } from './routes.ts'
 export { JobSessions } from './session.ts'
 export { foremanReportTool, REPORT_STATES } from './report-tool.ts'
 export type { Frame, Root, FrameAttachment } from './protocol.ts'

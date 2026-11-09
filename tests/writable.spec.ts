@@ -18,12 +18,14 @@ function isVolatilePath(node: any, path: string[]): boolean {
 
 /** The paths the page writes, one per field it shows. */
 const WRITTEN = [
-  ['url'], ['deviceId'], ['token'], ['roots'], ['heartbeatMs'], ['reconnectMs'],
+  ['url'], ['deviceId'], ['token'], ['roots'], ['heartbeatMs'], ['reconnectMs'], ['jobPreset'],
   // `['ssh']` itself is not writable, and does not need to be: the page sends one `set` per field, and every leaf
   // below carries its own marker. Only a whole-block write would need the object marked, and that would replace the
   // block's default with `{}`.
   ['ssh', 'enabled'], ['ssh', 'host'], ['ssh', 'port'], ['ssh', 'user'], ['ssh', 'keyPath'],
   ['ssh', 'remotePort'], ['ssh', 'localPort'],
+  // Same rule for the publishing block: one `set` per leaf, so each leaf needs the marker.
+  ['expose', 'enabled'], ['expose', 'remotePort'],
 ]
 
 it('accepts a write to every field the configuration page writes', () => {
@@ -61,6 +63,8 @@ it('accepts the whole value the page actually saves, section write included', ()
     roots: [{ project: 'dsh-foreman', path: 'F:\\dsh\\dsh-foreman' }],
     ssh: { enabled: true, host: '139.224.13.57', port: 22, user: 'root',
       keyPath: 'C:/Users/niech/.ssh/id_ed25519', remotePort: 8790, localPort: 8790 },
+    expose: { enabled: true, remotePort: 13100 },
+    jobPreset: 'workspace-write',
   }
   // A refusal here is exactly the "保存失败" a person saw on the real machine.
   expect(validatePaths(value, Config)).toEqual([])

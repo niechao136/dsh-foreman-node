@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { JOB_PRESET, JobSessions } from '../src/session.ts'
 import { foremanReportTool } from '../src/report-tool.ts'
 import { parseFrame } from '../src/protocol.ts'
-import { apply, Config, configured, hubUrlOf, missingConfiguration, SSH_DEFAULTS } from '../src/index.ts'
+import { apply, accessOf, Config, configured, hubUrlOf, missingConfiguration, SSH_DEFAULTS } from '../src/index.ts'
 
 /**
  * A host that behaves like DSH for the parts a job touches: `resolveAgent` fails until `create` has run, `create`
@@ -173,9 +173,16 @@ function hostFor(services: Record<string, unknown> = {}) {
   const registered: string[] = []
   const effects: (() => void)[] = []
   const injected: string[][] = []
+  /** Listeners by event name, so a test can fire the one a save would fire. */
+  const listeners = new Map<string, (() => void)[]>()
   const host = {
     logger: { info: vi.fn(), warn: vi.fn() },
     effect: (callback: () => () => void) => { effects.push(callback()) },
+    on: (event: string, listener: () => void) => {
+      listeners.set(event, [...(listeners.get(event) ?? []), listener])
+      return () => {}
+    },
+    get: (name: string) => services[name],
     inject: (names: string[], callback: (child: unknown) => void) => {
       injected.push(names)
       if (names.every(name => services[name] !== undefined)) {
@@ -192,7 +199,9 @@ function hostFor(services: Record<string, unknown> = {}) {
     }
   }
   const disposers = () => { for (const dispose of effects) dispose() }
-  return { ctx: host as never, registered, injected, disposers }
+  /** Fires every listener registered for one event, as DSH does after committing a volatile-only save. */
+  const fire = (event: string, ...args: unknown[]) => { for (const listener of listeners.get(event) ?? []) listener(...args as []) }
+  return { ctx: host as never, registered, injected, disposers, listeners, fire }
 }
 
 describe('starting the device', () => {
@@ -222,6 +231,72 @@ describe('starting the device', () => {
     const dialled = info.mock.calls.map(call => call[2]).filter(value => typeof value === 'string')
     expect(dialled).toContain('ws://127.0.0.1:8790')
     expect(dialled).not.toContain('wss://ignored.example')
+  })
+})
+
+/**
+ * What a save does.
+ *
+ * Every field is volatile, so DSH commits a save into the running references and emits `loader/volatile-update`
+ * instead of restarting the plugin. Before this was listened to, the page had to tell people to restart DSH — the
+ * values were already committed and nothing acted on them, so the device kept dialling the old address.
+ */
+describe('a save that changes configuration', () => {
+  it('reconnects from the new values without a restart', async () => {
+    const { ctx, fire } = hostFor({})
+    const config = Config({ url: '', deviceId: 'd', token: 't' } as never) as unknown as Record<string, unknown>
+    await apply(ctx, config as never)
+    const info = (ctx as unknown as { logger: { info: ReturnType<typeof vi.fn> } }).logger.info
+    // Unconfigured, so nothing was dialled yet: exactly the state a fresh profile is in when the page is opened.
+    const before = info.mock.calls.map(call => call[2]).filter(value => typeof value === 'string')
+    expect(before).not.toContain('wss://hub.example')
+    // The save writes into the same references the plugin holds, then announces which paths moved.
+    ;(config as { url: { get(): string } }).url = { get: () => 'wss://hub.example' }
+    fire('loader/volatile-update', [['url']])
+    const after = info.mock.calls.map(call => call[2]).filter(value => typeof value === 'string')
+    expect(after).toContain('wss://hub.example')
+  })
+
+  it('stops what the old configuration started before starting the new one', async () => {
+    // Two connections from one device would take every assignment twice; a replace must not leave the old one up.
+    const { ctx, fire, disposers } = hostFor({})
+    const config = Config({ url: 'ws://first.example', deviceId: 'd', token: 't' } as never) as unknown as Record<string, unknown>
+    await apply(ctx, config as never)
+    ;(config as { url: { get(): string } }).url = { get: () => 'ws://second.example' }
+    fire('loader/volatile-update', [['url']])
+    const info = (ctx as unknown as { logger: { info: ReturnType<typeof vi.fn> } }).logger.info
+    const dialled = info.mock.calls.map(call => call[2]).filter(value => typeof value === 'string')
+    expect(dialled).toEqual(['ws://first.example', 'ws://second.example'])
+    // Disposal tears down whatever is current, not the first run.
+    disposers()
+  })
+})
+
+/** What the page is told about the address this machine can be opened at. */
+describe('the address the page reports', () => {
+  it('reports the web server port and the token, and asks the connection service for the URL', () => {
+    // Neither value is in the configuration: the port is assigned at startup and the token is minted per process.
+    const asked: string[] = []
+    const child = { get: (name: string) => name === 'connection'
+      ? { authenticatedUrl: (base: string) => { asked.push(base); return `${base}/?token=abc` } }
+      : undefined }
+    const answer = accessOf(child as never, { port: 65277, protocol: 'http:' } as never)
+    expect(answer).toEqual({ localPort: 65277, protocol: 'http:', token: 'abc' })
+    expect(asked).toEqual(['http://127.0.0.1:65277'])
+  })
+
+  it('reports the port with no token on a host that has no connection service', () => {
+    // A headless DSH has a web server port and no browser auth; the page says the token is unavailable rather than
+    // printing a link that lands on the sign-in wall.
+    const answer = accessOf({ get: () => undefined } as never, { port: 65277 } as never)
+    expect(answer).toMatchObject({ localPort: 65277, protocol: 'http:' })
+    expect(answer.token).toBeUndefined()
+  })
+
+  it('carries the scheme through, so a TLS-terminated host builds an https address', () => {
+    const child = { get: () => ({ authenticatedUrl: (base: string) => `${base}/?token=t` }) }
+    expect(accessOf(child as never, { port: 443, protocol: 'https:' } as never))
+      .toEqual({ localPort: 443, protocol: 'https:', token: 't' })
   })
 })
 

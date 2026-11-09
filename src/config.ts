@@ -33,6 +33,26 @@ export interface SshConfig {
   localPort: number
 }
 
+/**
+ * Publishing this machine's own web page on the hub.
+ *
+ * The opposite direction from `SshConfig`: that tunnel exists so this device can reach the hub, this one exists so
+ * a person on the hub can reach this device's configuration page. They share the connection details and nothing
+ * else — in particular the local port here is not configurable, because it is the port DSH itself was given.
+ */
+export interface ExposeConfig {
+  /** Ask the hub to carry this machine's web page. */
+  enabled: boolean
+  /**
+   * The port the hub should listen on, on its own loopback.
+   *
+   * Chosen by the operator rather than fixed, because the hub is shared: whatever is already listening there wins,
+   * and only the person who administers the hub knows what is free. The page offers a check before saving for the
+   * same reason — a port that is taken makes the forward fail on every attempt.
+   */
+  remotePort: number
+}
+
 /** What the `dsh-foreman-node` entry in a profile's patch configures. */
 export interface NodeConfig {
   /** The hub's stable address; the device dials out to it. Blank until someone fills it in. */
@@ -49,6 +69,8 @@ export interface NodeConfig {
   reconnectMs: number
   /** How to reach a hub that is not directly reachable. */
   ssh: SshConfig
+  /** How to publish this machine's own web page on the hub. */
+  expose: ExposeConfig
   /**
    * The permission preset a job runs under.
    *
@@ -61,6 +83,9 @@ export interface NodeConfig {
 
 /** The SSH defaults, spread over whatever the host hands in, so a partial block is still complete. */
 export const SSH_DEFAULTS: SshConfig = { enabled: false, host: '', port: 22, user: '', keyPath: '', remotePort: 8790, localPort: 8790 }
+
+/** The publishing defaults: off, on a port this plugin uses for nothing else. */
+export const EXPOSE_DEFAULTS: ExposeConfig = { enabled: false, remotePort: 13100 }
 
 /** A volatile field arrives wrapped; this reads it either way, so callers do not have to know which. */
 const valueOf = <T>(field: T | { get(): T } | undefined, fallback: T): T => {
@@ -98,6 +123,21 @@ function unwrapSsh(block: unknown): Partial<SshConfig> {
   }
 }
 
+/**
+ * Unwrap the `expose` block.
+ *
+ * Same rule as `ssh`: its fields are volatile, so each may arrive wrapped, and reading them through `valueOf` means
+ * a patch file written before this block existed works just as well as a wrapped one.
+ */
+function unwrapExpose(block: unknown): Partial<ExposeConfig> {
+  if (block === null || typeof block !== 'object') return {}
+  const source = block as Record<string, unknown>
+  return {
+    enabled: valueOf(source['enabled'] as boolean, EXPOSE_DEFAULTS.enabled),
+    remotePort: valueOf(source['remotePort'] as number, EXPOSE_DEFAULTS.remotePort),
+  }
+}
+
 export function configured(config: object | undefined): NodeConfig {
   const source = (config ?? {}) as Record<string, unknown>
   return { url: valueOf(source['url'] as string, ''), deviceId: valueOf(source['deviceId'] as string, ''),
@@ -105,5 +145,6 @@ export function configured(config: object | undefined): NodeConfig {
     heartbeatMs: valueOf(source['heartbeatMs'] as number, 15_000), reconnectMs: valueOf(source['reconnectMs'] as number, 1_000),
     jobPreset: valueOf(source['jobPreset'] as string, 'workspace-write'),
     // `ssh` holds volatile fields too, so each one is unwrapped like the top level.
-    ssh: { ...SSH_DEFAULTS, ...unwrapSsh(source['ssh']) } }
+    ssh: { ...SSH_DEFAULTS, ...unwrapSsh(source['ssh']) },
+    expose: { ...EXPOSE_DEFAULTS, ...unwrapExpose(source['expose']) } }
 }

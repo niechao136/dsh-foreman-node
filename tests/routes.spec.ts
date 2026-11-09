@@ -8,17 +8,19 @@ import { expect, it } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { registerNodeRoutes, testArgs } from '../src/routes.ts'
+import { parsePortCheck, portCheckArgs, portCheckScript, registerNodeRoutes, testArgs } from '../src/routes.ts'
+import type { AccessAnswer } from '../src/routes.ts'
 
 type Handler = (req: never, res: never) => Promise<void>
 /** Mount the routes on a fake web server and return a request helper. */
-function serve(directory: string, run?: (argv: readonly string[]) => Promise<{ code: number | null; output: string }>) {
+function serve(directory: string, run?: (argv: readonly string[], input?: string) => Promise<{ code: number | null; output: string }>,
+  access?: () => AccessAnswer) {
   let handler = async (_req: unknown, _res: unknown): Promise<void> => {}
   const host = { port: 3088, register: (route: { handler: (req: never, res: never) => Promise<void> }) => {
     handler = route.handler as unknown as (req: unknown, res: unknown) => Promise<void>
     return () => {}
   } }
-  registerNodeRoutes(host as never, directory, run)
+  registerNodeRoutes(host as never, directory, run, access)
   const request = async (method: string, path: string, payload?: unknown,
     headers: Record<string, string | undefined> = {}) => {
     let status = 0, text = ''
@@ -109,4 +111,72 @@ it('answers unknown paths rather than pretending they work', async () => {
 it('builds an authentication test that asks for nothing interactive', () => {
   expect(testArgs({ host: 'h', port: 2222, user: 'u', keyPath: '/k' })).toEqual(['ssh', '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '-p', '2222', '-i', '/k', 'u@h', 'true'])
+})
+
+it('answers the port, scheme and token the page needs to build an address', async () => {
+  // All three come from the running process: the port is assigned at startup and the token is minted per launch, so
+  // neither is something the configuration could hold or the page could read for itself.
+  const response = await serve(keysDir({}), undefined,
+    () => ({ localPort: 65277, protocol: 'http:', token: 'abc' }))('GET', 'access')
+  expect(response.body).toEqual({ localPort: 65277, protocol: 'http:', token: 'abc' })
+})
+
+it('still reports the port when nothing can mint a token, rather than a link to the sign-in wall', async () => {
+  // A host with no connection service has no token, and the page says so instead of printing a URL that would fail.
+  const response = await serve(keysDir({}))('GET', 'access')
+  expect(response.body).toMatchObject({ localPort: 3088, protocol: 'http:' })
+  expect((response.body as { token?: unknown }).token).toBeUndefined()
+})
+
+it('answers whether the hub can take the port, and whether it keeps idle links alive', async () => {
+  const directory = keysDir({ id_ed25519: 'P', 'id_ed25519.pub': 'ssh-ed25519 AAAA c' })
+  const seen: (readonly string[])[] = []
+  const inputs: (string | undefined)[] = []
+  const response = await serve(directory, async (argv, input) => {
+    seen.push(argv)
+    inputs.push(input)
+    return { code: 0, output: 'PORT=busy\nCLIENTALIVE=0\n' }
+  })('POST', 'port', { host: 'h', port: 22, user: 'u', keyPath: join(directory, 'id_ed25519'), remotePort: 13100 })
+  expect(response.body).toMatchObject({ port: 'busy', clientAliveInterval: 0 })
+  // The script travels on stdin: ssh would otherwise re-quote it through the hub's login shell.
+  expect(inputs[0]).toContain('13100')
+  expect(seen[0]!.at(-1)).toBe('sh -s')
+})
+
+it('keeps "could not tell" apart from "free", because only one of them is permission to save', async () => {
+  const directory = keysDir({ id_ed25519: 'P', 'id_ed25519.pub': 'ssh-ed25519 AAAA c' })
+  const request = serve(directory, async () => ({ code: 255, output: 'Permission denied (publickey).' }))
+  const response = await request('POST', 'port',
+    { host: 'h', user: 'u', keyPath: join(directory, 'id_ed25519'), remotePort: 13100 })
+  expect(response.status).toBe(200)
+  expect(response.body).toMatchObject({ port: 'unknown', output: 'Permission denied (publickey).' })
+})
+
+it('refuses a port check with no port, and never runs ssh for one', async () => {
+  let ran = 0
+  const directory = keysDir({ id_ed25519: 'P', 'id_ed25519.pub': 'ssh-ed25519 AAAA c' })
+  const request = serve(directory, async () => { ran++; return { code: 0, output: '' } })
+  const missing = await request('POST', 'port', { host: 'h', user: 'u', keyPath: join(directory, 'id_ed25519') })
+  expect(missing.status).toBe(400)
+  const wild = await request('POST', 'port',
+    { host: 'h', user: 'u', keyPath: join(directory, 'id_ed25519'), remotePort: 70000 })
+  expect(wild.status).toBe(400)
+  expect(ran).toBe(0)
+})
+
+it('reads both answers out of the script output and drops the markers', () => {
+  expect(parsePortCheck('PORT=free\nCLIENTALIVE=30\n')).toEqual({ port: 'free', clientAliveInterval: 30, output: '' })
+  // A script that printed nothing is not a device that reported "free".
+  expect(parsePortCheck('')).toMatchObject({ port: 'unknown', clientAliveInterval: 0 })
+  expect(parsePortCheck('PORT=busy\nCLIENTALIVE=0\nsome warning').output).toBe('some warning')
+})
+
+it('asks the hub about the chosen port, and reads the keepalive from the effective configuration', () => {
+  const script = portCheckScript(13100)
+  expect(script).toContain('13100')
+  // `sshd -T` is the effective configuration, so an `Include`d file is covered; the file is the fallback.
+  expect(script).toContain('sshd -T')
+  expect(script).toContain('sshd_config')
+  expect(portCheckArgs({ host: 'h', port: 2222, user: 'u', keyPath: '/k' })).toEqual(['ssh', '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=8', '-o', 'StrictHostKeyChecking=accept-new', '-p', '2222', '-i', '/k', 'u@h', 'sh -s'])
 })

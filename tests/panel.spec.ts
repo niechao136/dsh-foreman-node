@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, it } from 'vitest'
 import { DevicePage } from '../src/client/index.tsx'
 import { zh } from '../src/client/locales.ts'
-import { DEFAULT_SSH } from '../src/client/page-state.ts'
+import { DEFAULT_EXPOSE, DEFAULT_SSH } from '../src/client/page-state.ts'
 import type { PageForm } from '../src/client/section.ts'
 import type { NodeConfig } from '../src/index.ts'
 
@@ -19,17 +19,18 @@ const t = (key: keyof typeof zh): string => zh[key]
 
 const config = (overrides: Partial<NodeConfig> = {}): NodeConfig => ({
   url: 'wss://hub.example', deviceId: 'laptop', token: 'tok', roots: [], heartbeatMs: 15_000, reconnectMs: 1_000,
-  ssh: { ...DEFAULT_SSH }, ...overrides }) as NodeConfig
+  ssh: { ...DEFAULT_SSH }, expose: { ...DEFAULT_EXPOSE }, jobPreset: 'workspace-write', ...overrides }) as NodeConfig
 
 /** A form snapshot in the shape the settings provider hands over; the page reads `state.value` out of it. */
 const form = (value: NodeConfig, writable = true): PageForm => ({ state: {
   status: 'ready' as const, value: value as unknown as Record<string, unknown>, base: undefined, user: undefined,
   revision: 1, writable, mode: 'host' as const }, mutate: async () => true })
 
-/** The page, with the key list and the test result supplied rather than fetched. */
-const render = (value: NodeConfig, options: { keys?: unknown[]; failed?: boolean } = {}): string =>
+/** The page, with the key list, the access answer and the test result supplied rather than fetched. */
+const render = (value: NodeConfig, options: { keys?: unknown[]; failed?: boolean
+  access?: { localPort?: number; protocol?: 'http:' | 'https:'; token?: string } } = {}): string =>
   renderToStaticMarkup(createElement(DevicePage, { t, form: form(value), initialKeys: options.keys as never,
-    keysFailed: options.failed } as never))
+    keysFailed: options.failed, initialAccess: options.access } as never))
 
 it('shows the address it will dial and that the tunnel derives it', () => {
   const markup = render(config({ ssh: { ...DEFAULT_SSH, enabled: true, localPort: 8791 } }))
@@ -89,4 +90,46 @@ it('says the host exposes no configuration instead of waiting forever', () => {
   const markup = renderToStaticMarkup(createElement(DevicePage, { t, form: unavailable } as never))
   expect(markup).toContain('data-foreman-node-page="unavailable"')
   expect(markup).not.toContain(zh.loading)
+})
+
+it('shows the port this machine listens on, not the port on the hub', () => {
+  // The two are different numbers and the local one is assigned by the OS at startup, so a page that showed the
+  // configured remotePort here would send people to a port nothing on this machine is listening on.
+  const markup = render(config({ ssh: { ...DEFAULT_SSH, enabled: true, host: 'h', user: 'u', keyPath: '/k' },
+    expose: { enabled: true, remotePort: 13100 } }), { access: { localPort: 65277, protocol: 'http:', token: 'tok' } })
+  expect(markup).toContain('http://127.0.0.1:65277/?token=tok')
+  expect(markup).toContain('http://127.0.0.1:13100/?token=tok')
+  expect(markup).toContain('data-node-local-web-port')
+})
+
+it('makes the local address a link, and keeps the published one a plain box', () => {
+  // The local address is the one that opens here, so it should be clickable. The published one points at a port on
+  // the hub: nothing on this machine listens there, so a link would be dead.
+  const markup = render(config({ ssh: { ...DEFAULT_SSH, enabled: true, host: 'h', user: 'u', keyPath: '/k' },
+    expose: { enabled: true, remotePort: 13100 } }), { access: { localPort: 65277, protocol: 'http:', token: 'tok' } })
+  expect(markup).toContain('<a data-node-access-local="true" href="http://127.0.0.1:65277/?token=tok"')
+  expect(markup).toContain('data-node-access-published="true" readonly=""')
+})
+
+it('keeps the published address out of reach when publishing is off', () => {
+  const markup = render(config(), { access: { localPort: 65277, protocol: 'http:', token: 'tok' } })
+  expect(markup).toContain('http://127.0.0.1:65277/?token=tok')
+  expect(markup).not.toContain('data-node-access-published')
+})
+
+it('says there is no port to read rather than showing an empty address', () => {
+  expect(render(config(), { access: {} })).toContain(zh.accessNoPort)
+})
+
+it('offers the job preset, which had a schema and no field', () => {
+  const markup = render(config({ jobPreset: 'workspace-write-never-ask' }))
+  expect(markup).toContain('data-node-job-preset')
+  expect(markup).toContain('workspace-write-never-ask')
+})
+
+it('offers the port check next to the published port', () => {
+  const markup = render(config({ ssh: { ...DEFAULT_SSH, enabled: true, host: 'h', user: 'u', keyPath: '/k' },
+    expose: { enabled: true, remotePort: 13100 } }))
+  expect(markup).toContain('data-node-expose-check')
+  expect(markup).toContain('data-node-expose-port')
 })
