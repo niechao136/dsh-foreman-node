@@ -1,0 +1,38 @@
+/* The device page's layout, styled with DSH `--dsw-alias-*` tokens through the `--dtn-*` scale; one rule per line. */
+/* 设计令牌只在这里定义一次，其余规则一律引用变量：散落的字面量会让同名控件在不同页面出现 1~2px 的视觉漂移。 */
+/* Both the tokens and the class names belong to this page alone: a section is mounted into a document every other
+   plugin also styles, so `:root` and a generic `dt-` prefix would reach outside it. */
+.dtn-page { --dtn-fs-page: 22px; --dtn-fs-block: 17px; --dtn-fs-sub: 15px; --dtn-fs-body: 14px; --dtn-fs-meta: 13px; --dtn-lh-body: 1.6; --dtn-space-1: 4px; --dtn-space-2: 8px; --dtn-space-3: 12px; --dtn-space-4: 16px; --dtn-space-5: 24px; --dtn-space-6: 32px; --dtn-radius-sm: 10px; --dtn-radius: 14px; --dtn-radius-lg: 20px; --dtn-border: 0.5px solid var(--dsw-alias-border-l3); --dtn-focus: 2px solid var(--dsw-alias-brand-primary); --dtn-dur: 140ms; --dtn-ease: cubic-bezier(.2, .7, .3, 1); --dtn-surface-soft: var(--dsw-alias-interactive-bg-hover); --dtn-content-max: 760px }
+/* The host owns scrolling and padding of a settings section, so this page only sets its own measure. */
+.dtn-page { container-type: inline-size; display: flex; flex-direction: column; gap: var(--dtn-space-5); max-width: var(--dtn-content-max); color: var(--dsw-alias-label-primary); font-size: var(--dtn-fs-body); line-height: var(--dtn-lh-body); }
+.dtn-page > h2 { margin: 0; font-size: var(--dtn-fs-page); line-height: 1.4; font-weight: 600; }
+/* One card per section: the page groups unrelated machines settings, and a rule between them is what shows the grouping. */
+.dtn-section { display: flex; flex-direction: column; gap: var(--dtn-space-3); min-width: 0; padding: var(--dtn-space-4); border: var(--dtn-border); border-radius: var(--dtn-radius-lg); background: var(--dsw-alias-bg-layer-1, transparent); }
+.dtn-section > h3 { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--dtn-space-2); font-size: var(--dtn-fs-block); line-height: 1.5; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+.dtn-field { display: flex; flex-direction: column; gap: var(--dtn-space-2); min-width: 0; font-size: var(--dtn-fs-body); line-height: 1.5; color: var(--dsw-alias-label-secondary); }
+/* The SSH block collects five short fields side by side; a column per field wastes the width a form has. */
+.dtn-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--dtn-space-3); }
+.dtn-field > input[type="text"], .dtn-field > input[type="password"], .dtn-field > input[type="number"], .dtn-field > input:not([type]) { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dtn-radius-sm); padding: 0 var(--dtn-space-2); font: inherit; font-size: var(--dtn-fs-sub); color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); }
+.dtn-field > input:focus-visible, .dtn-select:focus-visible { outline: var(--dtn-focus); outline-offset: 1px; }
+.dtn-field > input:disabled, .dtn-select:disabled { color: var(--dsw-alias-label-tertiary); cursor: not-allowed; }
+.dtn-select { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dtn-radius-sm); padding: 0 28px 0 var(--dtn-space-2); text-overflow: ellipsis; font: inherit; font-size: var(--dtn-fs-sub); line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); }
+.dtn-hint { margin: 0; font-size: var(--dtn-fs-meta); line-height: 1.5; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }
+.dtn-check { display: flex; align-items: center; gap: var(--dtn-space-2); font-size: var(--dtn-fs-body); line-height: 1.5; color: var(--dsw-alias-label-primary); cursor: pointer; }
+.dtn-check > input { flex: none; margin: 0; accent-color: var(--dsw-alias-brand-primary); }
+.dtn-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--dtn-space-2); }
+.dtn-actions > button, .dtn-save { height: 32px; padding: 0 var(--dtn-space-4); border: var(--dtn-border); border-radius: var(--dtn-radius-sm); font: inherit; font-size: var(--dtn-fs-body); font-weight: 500; color: var(--dsw-alias-label-primary); background: transparent; cursor: pointer; transition: background var(--dtn-dur) var(--dtn-ease), border-color var(--dtn-dur) var(--dtn-ease); }
+.dtn-actions > button:hover:not(:disabled), .dtn-save:hover:not(:disabled) { background: var(--dtn-surface-soft); }
+.dtn-save { border-color: transparent; color: var(--dsw-alias-label-inverse, #fff); background: var(--dsw-alias-brand-primary); }
+.dtn-save:hover:not(:disabled) { background: var(--dsw-alias-brand-primary); filter: brightness(1.08); }
+.dtn-actions > button:disabled, .dtn-save:disabled { opacity: .5; cursor: not-allowed; }
+.dtn-actions > button:focus-visible, .dtn-save:focus-visible { outline: var(--dtn-focus); outline-offset: 2px; }
+/* A copyable address: the box is monospace because a person compares it to a terminal, not reads it as prose. */
+/* The class sits on the address itself (an anchor for the local URL, a plain box for the published one), so this is
+   one rule for both rather than a descendant selector only one of them would match. */
+.dtn-address { font-family: var(--ds-font-family-code, Menlo, monospace); font-size: var(--dtn-fs-meta); overflow-wrap: anywhere; }
+a.dtn-address { color: var(--dsw-alias-link); text-decoration: none; }
+a.dtn-address:hover { text-decoration: underline; }
+.dtn-note { margin: 0; padding: var(--dtn-space-2) var(--dtn-space-3); border-radius: var(--dtn-radius-sm); font-size: var(--dtn-fs-meta); line-height: 1.5; background: var(--dtn-surface-soft); overflow-wrap: anywhere; }
+.dtn-note.dtn-danger { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }
+.dtn-note.dtn-warn { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); }
+.dtn-state { margin: 0; font-size: var(--dtn-fs-body); line-height: 1.5; color: var(--dsw-alias-label-tertiary); }

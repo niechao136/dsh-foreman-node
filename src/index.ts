@@ -18,6 +18,7 @@ import { NodeClient } from './client.ts'
 import { configured, EXPOSE_DEFAULTS, SSH_DEFAULTS, type NodeConfig, type NodeRoot, type SshConfig } from './config.ts'
 import { Expose } from './expose.ts'
 import { registerNodeRoutes, type AccessAnswer, type RouteHost } from './routes.ts'
+import { builtInAnswer, FALLBACK_PRESET, type PresetAnswer, type PresetOption } from './presets.ts'
 import { Tunnel } from './tunnel.ts'
 import { JobSessions } from './session.ts'
 import type { Frame } from './protocol.ts'
@@ -42,7 +43,7 @@ declare module '@deepseek-ai/cordis' {
  * is missing, and a device that cannot say what it is would be rejected. `tests/version.spec.ts` pins the two
  * together, because this constant silently drifted three releases behind.
  */
-export const VERSION = '0.4.0'
+export const VERSION = '0.5.0'
 
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
@@ -199,7 +200,8 @@ export async function apply(ctx: Context, raw: ConfigInput): Promise<void> {
     // The service shape is declared locally rather than imported from `@deepseek-ai/dsh-host-webserver`: the device
     // package stays thin, and this plugin needs two members of that service, not its whole surface.
     const host = (child as unknown as { webServer: RouteHost }).webServer
-    child.effect(() => registerNodeRoutes(host, sshDirectory(), undefined, () => accessOf(child, host)))
+    child.effect(() => registerNodeRoutes(host, sshDirectory(), undefined, () => accessOf(child, host),
+      () => presetsOf(child)))
   })
   let running: Running | undefined
   const stop = (): void => { running?.stop(); running = undefined }
@@ -281,6 +283,34 @@ export function accessOf(child: Context, host: RouteHost): AccessAnswer {
     } catch { return undefined }
   })()
   return { localPort: port, protocol, token }
+}
+
+/**
+ * The permission presets this host would accept, for the page's picker.
+ *
+ * Read from the host's own catalog rather than listed here: a profile patch adds presets (`read-only` in this
+ * workspace's patch) and the composition contributes others, so a list kept in this package would drift from what
+ * `permissionPresets.set` actually takes. A host whose service is missing or throwing answers with the built-in
+ * table, because a page with a short list is better than a page whose picker never loads — and a name this list does
+ * not have still reaches the job and falls back there, not here.
+ */
+export function presetsOf(child: Context): PresetAnswer {
+  try {
+    const catalog = child.get('permissionPresets')?.catalog?.()
+    if (catalog === undefined || !Array.isArray(catalog.options) || catalog.options.length === 0) return builtInAnswer()
+    // Copied field by field: the catalog's objects are the service's own and the answer is serialized to the page.
+    const options: PresetOption[] = []
+    for (const option of catalog.options) {
+      if (typeof option?.value !== 'string' || option.value.trim() === '') continue
+      options.push({ value: option.value, name: typeof option.name === 'string' ? option.name : option.value,
+        ...(typeof option.description === 'string' ? { description: option.description } : {}) })
+    }
+    if (options.length === 0) return builtInAnswer()
+    const defaultPreset = typeof catalog.defaultPreset === 'string' && catalog.defaultPreset.trim() !== ''
+      ? catalog.defaultPreset
+      : FALLBACK_PRESET
+    return { options, defaultPreset, source: 'host' }
+  } catch { return builtInAnswer() }
 }
 
 /** The web server's own port, read defensively: a service that is not there yet must not break the page. */

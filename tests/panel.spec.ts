@@ -26,11 +26,13 @@ const form = (value: NodeConfig, writable = true): PageForm => ({ state: {
   status: 'ready' as const, value: value as unknown as Record<string, unknown>, base: undefined, user: undefined,
   revision: 1, writable, mode: 'host' as const }, mutate: async () => true })
 
-/** The page, with the key list, the access answer and the test result supplied rather than fetched. */
+/** The page, with the key list, the access answer, the preset list and the test results supplied rather than fetched. */
 const render = (value: NodeConfig, options: { keys?: unknown[]; failed?: boolean
-  access?: { localPort?: number; protocol?: 'http:' | 'https:'; token?: string } } = {}): string =>
+  access?: { localPort?: number; protocol?: 'http:' | 'https:'; token?: string }
+  presets?: { options: { value: string; name: string }[]; defaultPreset: string; source: 'host' | 'built-in' } } = {}
+): string =>
   renderToStaticMarkup(createElement(DevicePage, { t, form: form(value), initialKeys: options.keys as never,
-    keysFailed: options.failed, initialAccess: options.access } as never))
+    keysFailed: options.failed, initialAccess: options.access, initialPresets: options.presets } as never))
 
 it('shows the address it will dial and that the tunnel derives it', () => {
   const markup = render(config({ ssh: { ...DEFAULT_SSH, enabled: true, localPort: 8791 } }))
@@ -121,10 +123,39 @@ it('says there is no port to read rather than showing an empty address', () => {
   expect(render(config(), { access: {} })).toContain(zh.accessNoPort)
 })
 
-it('offers the job preset, which had a schema and no field', () => {
-  const markup = render(config({ jobPreset: 'workspace-write-never-ask' }))
+it('offers the job preset as a list the device supplies, not a free-text box', () => {
+  // The box used to accept any string; a typo was only found when a job arrived, and the job then quietly fell back
+  // to workspace-write. The list has to be the names the device's permission service accepts.
+  const markup = render(config({ jobPreset: 'danger-full-access' }), { presets: { options: [
+    { value: 'read-only', name: 'read-only' }, { value: 'workspace-write', name: 'workspace-write' },
+    { value: 'danger-full-access', name: 'danger-full-access' }], defaultPreset: 'workspace-write', source: 'host' } })
   expect(markup).toContain('data-node-job-preset')
+  expect(markup).toContain('<select')
+  expect(markup).not.toContain('data-node-job-preset=""')
+  // The saved value is selected, and every offered name is there to pick.
+  expect(markup).toContain('value="danger-full-access"')
+  expect(markup).toContain('value="read-only"')
+  // An empty option means "leave the schema default", which `editsOf` already skips.
+  expect(markup).toContain('<option value=""')
+})
+
+it('keeps a saved preset the device no longer offers, and says so', () => {
+  // Blanking the picker would rewrite the field on the next save; the saved name stays selected and is reported.
+  const markup = render(config({ jobPreset: 'workspace-write-never-ask' }),
+    { presets: { options: [{ value: 'workspace-write', name: 'workspace-write' }], defaultPreset: 'workspace-write',
+      source: 'host' } })
   expect(markup).toContain('workspace-write-never-ask')
+  expect(markup).toContain('data-job-preset-unknown')
+  expect(markup).toContain(zh.jobPresetUnknown)
+})
+
+it('falls back to the built-in presets when the device cannot answer', () => {
+  // No `presets` supplied is the state the page is in on its very first render and whenever the route fails; the
+  // picker still has the three presets the composition always contributes, rather than one empty option.
+  const markup = render(config({ jobPreset: 'read-only' }))
+  expect(markup).toContain('value="danger-full-access"')
+  expect(markup).toContain('value="read-only"')
+  expect(markup).not.toContain('data-job-preset-unknown')
 })
 
 it('offers the port check next to the published port', () => {

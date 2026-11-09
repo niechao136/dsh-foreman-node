@@ -65,7 +65,9 @@ export const zh = {
   copy: '复制',
   jobSection: '默认对话策略',
   jobPreset: '权限预设',
-  jobPresetHint: '设备上没人能回答确认框，用一个不打断工作的预设。留空表示用默认的 workspace-write。',
+  jobPresetDefault: '（未设置：用 DSH 的默认预设）',
+  jobPresetHint: '设备上没人能回答确认框，用一个不打断工作的预设。列表来自这台机器的权限服务，就是它可以接受的预设名。',
+  jobPresetUnknown: '这个预设名这台机器不认识，任务会退回 workspace-write 运行：',
 }
 
 export const en: typeof zh = {
@@ -134,7 +136,9 @@ export const en: typeof zh = {
   copy: 'Copy',
   jobSection: 'Default job policy',
   jobPreset: 'Permission preset',
-  jobPresetHint: 'Nobody is at this machine to answer a prompt, so pick a preset that does not stop the work. Empty means the default, workspace-write.',
+  jobPresetDefault: '(unset: DSH\'s own default preset)',
+  jobPresetHint: 'Nobody is at this machine to answer a prompt, so pick a preset that does not stop the work. This list is what the machine\'s permission service accepts.',
+  jobPresetUnknown: 'This machine does not know that preset, so jobs fall back to workspace-write:',
 }
 
 /** The page's key union, so a missing translation is a compile error rather than a raw key on screen. */
