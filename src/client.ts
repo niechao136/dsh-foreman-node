@@ -10,6 +10,7 @@
  */
 import { FOREMAN_PROTOCOL_VERSION, FrameDedupe, encodeFrame, parseFrame, type Frame, type HeartbeatFrame, type HelloFrame,
   type ReportFrame, type Root, type AcceptedFrame, type AckFrame } from './protocol.ts'
+import { FrameOutbox } from './outbox.ts'
 
 /** What a socket has to offer; the global `WebSocket` satisfies it, and tests supply an object that does too. */
 export interface SocketLike {
@@ -45,6 +46,14 @@ export interface NodeClientInput {
   log?: (text: string) => void
   /** Frame ids the device has already acted on, so a redelivered frame does nothing twice. */
   dedupe?: FrameDedupe
+  /**
+   * Where reports wait while the socket is closed.
+   *
+   * A report is the only way the hub learns what a job did, and a job often finishes exactly when the connection is
+   * down. Without a queue that fact is lost and the ticket waits until `hubIdleMs` reports it `blocked` as "device
+   * offline" — while the work is done. Empty keeps the queue in memory, which tests use.
+   */
+  outboxFile?: string
 }
 
 const OPEN = 1
@@ -69,13 +78,19 @@ export class NodeClient {
   private readonly dedupe: FrameDedupe
   private readonly connect: Connect
   private readonly log: (text: string) => void
+  /** Reports the hub has not confirmed yet; replayed on every connection, oldest first. */
+  private readonly outbox: FrameOutbox
 
   constructor(private readonly input: NodeClientInput) {
     this.delay = input.reconnectMs ?? 1_000
     this.dedupe = input.dedupe ?? new FrameDedupe(new Set())
     this.connect = input.connect ?? (url => new WebSocket(url) as unknown as SocketLike)
     this.log = input.log ?? (() => {})
+    this.outbox = new FrameOutbox(input.outboxFile, this.log)
   }
+
+  /** How many reports still wait to reach the hub; a device with a growing queue cannot reach it. */
+  get queued(): number { return this.outbox.size }
 
   /** Open the connection, or do nothing if it is already open or opening. */
   start(): void {
@@ -104,11 +119,32 @@ export class NodeClient {
     }
   }
 
-  /** Report an outcome on an assignment, which is the only way a hub learns what a job did. */
+  /**
+   * Report an outcome on an assignment, which is the only way a hub learns what a job did.
+   *
+   * The frame is queued before it is sent, so a report produced while the socket is closed is delivered by the next
+   * connection instead of being lost. A `ready`/`blocked`/`failed` report is the final word on an assignment, and the
+   * hub's `FrameDedupe` makes a replay harmless.
+   */
   report(assignmentId: string, report: { state: 'progress' | 'ready' | 'blocked' | 'failed'; summary: string; question?: string }): void {
     const frame: ReportFrame = { v: FOREMAN_PROTOCOL_VERSION, type: 'report', frameId: nextFrameId('report'), assignmentId,
       state: report.state, summary: report.summary, ...(report.question === undefined ? {} : { question: report.question }) }
-    this.send(frame)
+    this.outbox.add(frame)
+    if (this.send(frame)) this.outbox.settle(frame.frameId)
+  }
+
+  /**
+   * Send a frame the work depends on, queueing it first when it may need redelivery.
+   *
+   * Used for the `ack` of an input frame: the hub clears `ticket.undelivered` from it, so an ack lost to a closed
+   * socket leaves a remote ticket unable to finish while it follows Threads.
+   */
+  sendDurable(frame: Frame): boolean {
+    if (!FrameOutbox.durable(frame)) return this.send(frame)
+    this.outbox.add(frame)
+    const sent = this.send(frame)
+    if (sent) this.outbox.settle(frame.frameId)
+    return sent
   }
 
   /** Whether the connection is open right now. */
@@ -129,6 +165,10 @@ export class NodeClient {
       this.delay = this.input.reconnectMs ?? 1_000
       this.hello()
       this.startHeartbeat()
+      // Everything the last connection could not carry goes out now, oldest first. The hub aligns from `hello` first,
+      // so a report queued before the reconnect lands on a ledger that already knows the assignment exists.
+      const sent = this.outbox.flush(frame => this.send(frame))
+      if (sent > 0) this.log(`dsh-foreman-node delivered ${sent} queued frame(s)`)
     })
     socket.addEventListener('message', event => {
       if (this.stopped) return
@@ -185,7 +225,9 @@ export class NodeClient {
   /** Acknowledge a frame once its side effect is done, so the hub can stop resending it. */
   ack(frame: Frame): void {
     const ack: AckFrame = { v: FOREMAN_PROTOCOL_VERSION, type: 'ack', frameId: nextFrameId('ack'), of: frame.frameId }
-    this.send(ack)
+    // The hub clears the ticket's undelivered Inputs from this ack, so an ack lost to a closed socket would leave a
+    // remote ticket unable to finish. It is queued like a report for that reason.
+    this.sendDurable(ack)
   }
 
   /** Tell the hub a frame's work reached its Session, which is what lets it mark the assignment started. */

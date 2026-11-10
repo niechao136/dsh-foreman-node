@@ -235,6 +235,7 @@ function run(ctx: Context, config: NodeConfig): Running {
     running: () => jobs.running(),
     heartbeatMs: config.heartbeatMs,
     reconnectMs: config.reconnectMs,
+    outboxFile: outboxFile(),
     log: text => ctx.logger.warn('%s', text),
     onFrame: frame => { void receive(ctx, jobs, client, frame) },
   })
@@ -294,6 +295,17 @@ function ctxPort(ctx: Context): number | undefined {
 /** The directory the key list reads; `~/.ssh` on a machine where the current user is the one configuring it. */
 export function sshDirectory(): string {
   return join(homedir(), '.ssh')
+}
+
+/**
+ * Where reports wait while the hub is unreachable.
+ *
+ * Under the DSH home rather than a temp directory: the queue must outlive a restart, because the whole point is that a
+ * report produced while the connection was down still reaches the hub. `DSH_HOME` is where the host keeps everything
+ * else this profile owns, and a device that runs under a service account gets the same path consistently.
+ */
+export function outboxFile(): string {
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'state', 'foreman-node', 'outbox.jsonl')
 }
 
 /**
