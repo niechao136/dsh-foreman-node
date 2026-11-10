@@ -1,6 +1,6 @@
 {
   "name": "dsh-foreman-node",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Device side of dsh-foreman: connects out to a foreman hub, takes a job into a local DSH session, reports back. No ledger, no policy, no database.",
   "type": "module",
   "main": "lib/index.js",

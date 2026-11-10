@@ -13,11 +13,15 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { configured, type NodeConfig } from '../config.ts'
 import type { SshKey } from '../keys.ts'
 import type { AccessAnswer, PortCheckAnswer, TestResult } from '../routes.ts'
+import { presetChoices, type PresetAnswer } from '../presets.ts'
 import { ENTRY_ID, ENTRY_ORDER } from './entry.ts'
 import { accessAddresses, addressPreview, DEFAULT_EXPOSE, DEFAULT_SSH, editsOf, emptyFields, keepaliveMissing,
   keyLabel, portVerdict, testMessage } from './page-state.ts'
 import { Section, type FormController, type PageForm } from './section.ts'
 import { en, zh } from './locales.ts'
+// The stylesheet travels inside the bundle and is rendered through a <style> element: a settings section has no
+// stylesheet URL of its own, and the host's design tokens are already on the page it mounts into.
+import STYLES from './client.css?raw'
 
 /** The prefix the device's own routes answer under. */
 const API = '/foreman-node/api'
@@ -40,12 +44,21 @@ export const name = 'dsh-foreman-node'
 const NS = 'dshNode'
 
 /**
+ * The page's own styles, mounted beside its markup.
+ *
+ * A `<style>` element rather than a linked sheet because the section is mounted inside the host's page, and the host
+ * serves no stylesheet of this plugin's: the tokens (`--dsw-alias-*`) are already defined there, so all this adds is
+ * the layout that uses them.
+ */
+const Styles = () => <style>{STYLES}</style>
+
+/**
  * The page itself. `t` comes from the host's locale service, like every other plugin's page.
  *
  * `initialKeys` and `keysFailed` exist so a test can render a page without a network or a web server. Production never
  * passes them, so the page fetches as it otherwise would — they change nothing about how it behaves.
  */
-function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess }: {
+function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess, initialPresets }: {
   t: (key: keyof typeof zh) => string
   /**
    * The configuration form, or undefined when the host has not published this entry yet.
@@ -58,6 +71,8 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
   keysFailed?: boolean
   /** Supplied only by tests, so a page can render without a web server. */
   initialAccess?: AccessAnswer
+  /** Supplied only by tests: the preset list the device would answer with. */
+  initialPresets?: PresetAnswer
 }) {
   // The draft starts from the saved value when there is one, so the first render already shows the configuration
   // rather than a loading line that only an effect would replace.
@@ -79,6 +94,9 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
   const [tested, setTested] = useState<TestResult>()
   const [testing, setTesting] = useState(false)
   const [access, setAccess] = useState<AccessAnswer | undefined>(initialAccess)
+  // The preset list comes from the device, because only it knows which names its own permission service accepts. The
+  // built-in table stands in for the first render and for a host that cannot answer, so the picker is never empty.
+  const [presets, setPresets] = useState<PresetAnswer | undefined>(initialPresets)
   const [checked, setChecked] = useState<PortCheckAnswer>()
   const [checking, setChecking] = useState(false)
   const [notice, setNotice] = useState<string>()
@@ -97,6 +115,12 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
     if (initialAccess !== undefined) return
     ask<AccessAnswer>('access').then(setAccess, () => setAccess(undefined))
   }, [initialAccess])
+  // A failed fetch is not worth a message: `presetChoices` falls back to the built-in table, which is the same three
+  // presets the composition always contributes.
+  useEffect(() => {
+    if (initialPresets !== undefined) return
+    ask<PresetAnswer>('presets').then(setPresets, () => setPresets(undefined))
+  }, [initialPresets])
 
   const patch = (change: Partial<NodeConfig>) => setDraft(current => current === undefined ? current : { ...current, ...change })
   const patchSsh = (change: Partial<NodeConfig['ssh']>) =>
@@ -136,54 +160,68 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
   // `unavailable` is terminal, not a wait: the host has decided this client never gets the namespace (a remote browser
   // in memory mode, or a profile that does not expose it). Rendering "reading configuration…" there leaves a person
   // waiting for something that will not arrive, so it says so instead.
-  if (form?.state.status === 'unavailable') return <div data-foreman-node-page="unavailable">{t('unavailable')}</div>
-  if (draft === undefined) return <div data-foreman-node-page="loading">{t('loading')}</div>
+  if (form?.state.status === 'unavailable') return <div data-foreman-node-page="unavailable" className="dtn-page">
+    <Styles /><p className="dtn-state">{t('unavailable')}</p></div>
+  if (draft === undefined) return <div data-foreman-node-page="loading" className="dtn-page">
+    <Styles /><p className="dtn-state">{t('loading')}</p></div>
   const address = addressPreview(draft)
   const missing = emptyFields(draft, keepsToken)
   const urls = accessAddresses({ localPort: access?.localPort, protocol: access?.protocol ?? 'http:',
     token: access?.token, expose: { ...DEFAULT_EXPOSE, ...draft.expose } })
-  return <div data-foreman-node-page="ready">
+  const choice = presetChoices(draft.jobPreset, presets)
+  return <div data-foreman-node-page="ready" className="dtn-page">
+    <Styles />
     <h2>{t('title')}</h2>
-    <p className="dt-hint">{t('intro')}</p>
+    <p className="dtn-hint">{t('intro')}</p>
 
-    <section data-section="keys">
+    <section data-section="keys" className="dtn-section">
       <h3>{t('keysSection')}</h3>
-      <p className="dt-hint">{t('keysHint')}</p>
+      <p className="dtn-hint">{t('keysHint')}</p>
       {keysFailed
-        ? <p data-keys="unavailable">{t('keysUnavailable')}</p>
-        : keys === undefined ? <p>{t('loading')}</p>
-          : keys.length === 0 ? <p data-keys="empty">{t('keysEmpty')}</p>
-            : <select aria-label={t('keysSection')} data-node-key value={draft.ssh.keyPath}
-                onChange={event => patchSsh({ keyPath: event.target.value })}>
+        ? <p data-keys="unavailable" className="dtn-note">{t('keysUnavailable')}</p>
+        : keys === undefined ? <p className="dtn-state">{t('loading')}</p>
+          : keys.length === 0 ? <p data-keys="empty" className="dtn-note">{t('keysEmpty')}</p>
+            : <select aria-label={t('keysSection')} data-node-key className="dtn-select" value={draft.ssh.keyPath}
+                disabled={!editable} onChange={event => patchSsh({ keyPath: event.target.value })}>
                 <option value="">—</option>
                 {keys.map(key => <option key={key.path} value={key.path}>{keyLabel(key)}</option>)}
               </select>}
-      <label>{t('keyPath')}
+      <label className="dtn-field">{t('keyPath')}
         <input data-node-key-path value={draft.ssh.keyPath} disabled={!editable}
           onChange={event => patchSsh({ keyPath: event.target.value })} />
       </label>
     </section>
 
-    <section data-section="ssh">
+    <section data-section="ssh" className="dtn-section">
       <h3>{t('sshSection')}</h3>
-      <label><input type="checkbox" data-node-ssh-enabled checked={draft.ssh.enabled} disabled={!editable}
-        onChange={event => patchSsh({ enabled: event.target.checked })} />{t('sshEnabled')}</label>
-      <p className="dt-hint">{t('sshEnabledHint')}</p>
+      <label className="dtn-check"><input type="checkbox" data-node-ssh-enabled checked={draft.ssh.enabled}
+        disabled={!editable} onChange={event => patchSsh({ enabled: event.target.checked })} />{t('sshEnabled')}</label>
+      <p className="dtn-hint">{t('sshEnabledHint')}</p>
       {draft.ssh.enabled && <>
-        <label>{t('host')}<input data-node-host value={draft.ssh.host} disabled={!editable}
-          onChange={event => patchSsh({ host: event.target.value })} /></label>
-        <label>{t('port')}<input type="number" data-node-port value={draft.ssh.port} disabled={!editable}
-          onChange={event => patchSsh({ port: Number(event.target.value) || DEFAULT_SSH.port })} /></label>
-        <label>{t('user')}<input data-node-user value={draft.ssh.user} disabled={!editable}
-          onChange={event => patchSsh({ user: event.target.value })} /></label>
-        <label>{t('remotePort')}<input type="number" data-node-remote-port value={draft.ssh.remotePort} disabled={!editable}
-          onChange={event => patchSsh({ remotePort: Number(event.target.value) || DEFAULT_SSH.remotePort })} /></label>
-        <label>{t('localPort')}<input type="number" data-node-local-port value={draft.ssh.localPort} disabled={!editable}
-          onChange={event => patchSsh({ localPort: Number(event.target.value) || DEFAULT_SSH.localPort })} /></label>
-        <button type="button" data-node-test data-testing={testing ? 'true' : undefined}
-          disabled={!draft.ssh.host.trim() || !draft.ssh.user.trim() || !draft.ssh.keyPath.trim()}
-          onClick={() => { void test() }}>{testing ? t('testing') : t('test')}</button>
-        {tested !== undefined && <p data-test-result={testMessage(tested)}>
+        {/* Five short fields: on a wide page they read better in a row than stacked, and the grid falls back to one
+            column when the section is narrow. */}
+        <div className="dtn-fields">
+          <label className="dtn-field">{t('host')}<input data-node-host value={draft.ssh.host} disabled={!editable}
+            onChange={event => patchSsh({ host: event.target.value })} /></label>
+          <label className="dtn-field">{t('port')}<input type="number" data-node-port value={draft.ssh.port}
+            disabled={!editable}
+            onChange={event => patchSsh({ port: Number(event.target.value) || DEFAULT_SSH.port })} /></label>
+          <label className="dtn-field">{t('user')}<input data-node-user value={draft.ssh.user} disabled={!editable}
+            onChange={event => patchSsh({ user: event.target.value })} /></label>
+          <label className="dtn-field">{t('remotePort')}<input type="number" data-node-remote-port
+            value={draft.ssh.remotePort} disabled={!editable}
+            onChange={event => patchSsh({ remotePort: Number(event.target.value) || DEFAULT_SSH.remotePort })} /></label>
+          <label className="dtn-field">{t('localPort')}<input type="number" data-node-local-port
+            value={draft.ssh.localPort} disabled={!editable}
+            onChange={event => patchSsh({ localPort: Number(event.target.value) || DEFAULT_SSH.localPort })} /></label>
+        </div>
+        <div className="dtn-actions">
+          <button type="button" data-node-test data-testing={testing ? 'true' : undefined}
+            disabled={!draft.ssh.host.trim() || !draft.ssh.user.trim() || !draft.ssh.keyPath.trim()}
+            onClick={() => { void test() }}>{testing ? t('testing') : t('test')}</button>
+        </div>
+        {tested !== undefined && <p data-test-result={testMessage(tested)}
+          className={tested.ok ? 'dtn-note' : 'dtn-note dtn-danger'}>
           {tested.ok ? t('testOk')
             : testMessage(tested) === 'passphrase' ? t('testPassphrase')
               : testMessage(tested) === 'unresolved' ? t('testUnresolved')
@@ -193,49 +231,54 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
       </>}
     </section>
 
-    <section data-section="hub">
+    <section data-section="hub" className="dtn-section">
       <h3>{t('hubSection')}</h3>
-      <label>{t('address')}
+      <label className="dtn-field">{t('address')}
         <input data-node-url value={address.address} readOnly={address.derived} disabled={!editable || address.derived}
           onChange={event => patch({ url: event.target.value })} />
       </label>
-      {address.derived && <p className="dt-hint">{t('addressDerived')}</p>}
-      <label>{t('deviceId')}<input data-node-device value={draft.deviceId} disabled={!editable}
+      {address.derived && <p className="dtn-hint">{t('addressDerived')}</p>}
+      <label className="dtn-field">{t('deviceId')}<input data-node-device value={draft.deviceId} disabled={!editable}
         onChange={event => patch({ deviceId: event.target.value })} /></label>
-      <label>{t('token')}<input type="password" data-node-token value={draft.token} disabled={!editable}
-        autoComplete="new-password" placeholder={keepsToken ? t('tokenStored') : ''}
+      <label className="dtn-field">{t('token')}<input type="password" data-node-token value={draft.token}
+        disabled={!editable} autoComplete="new-password" placeholder={keepsToken ? t('tokenStored') : ''}
         onChange={event => patch({ token: event.target.value })} /></label>
-      <p className="dt-hint">{keepsToken ? t('tokenKeep') : t('tokenHint')}</p>
+      <p className="dtn-hint">{keepsToken ? t('tokenKeep') : t('tokenHint')}</p>
     </section>
 
-    <section data-section="roots">
+    <section data-section="roots" className="dtn-section">
       <h3>{t('rootsSection')}</h3>
-      <p className="dt-hint">{t('rootsHint')}</p>
-      {draft.roots.map((root, index) => <div key={index} data-root={index}>
-        <label>{t('project')}<input value={root.project} disabled={!editable}
+      <p className="dtn-hint">{t('rootsHint')}</p>
+      {draft.roots.map((root, index) => <div key={index} data-root={index} className="dtn-fields">
+        <label className="dtn-field">{t('project')}<input value={root.project} disabled={!editable}
           onChange={event => patch({ roots: draft.roots.map((item, at) => at === index ? { ...item, project: event.target.value } : item) })} /></label>
-        <label>{t('path')}<input value={root.path} disabled={!editable}
+        <label className="dtn-field">{t('path')}<input value={root.path} disabled={!editable}
           onChange={event => patch({ roots: draft.roots.map((item, at) => at === index ? { ...item, path: event.target.value } : item) })} /></label>
       </div>)}
-      <button type="button" disabled={!editable}
-        onClick={() => patch({ roots: [...draft.roots, { project: '', path: '' }] })}>{t('addRoot')}</button>
+      <div className="dtn-actions">
+        <button type="button" disabled={!editable}
+          onClick={() => patch({ roots: [...draft.roots, { project: '', path: '' }] })}>{t('addRoot')}</button>
+      </div>
     </section>
 
-    <section data-section="expose">
+    <section data-section="expose" className="dtn-section">
       <h3>{t('exposeSection')}</h3>
-      <label><input type="checkbox" data-node-expose-enabled checked={draft.expose.enabled} disabled={!editable}
-        onChange={event => patchExpose({ enabled: event.target.checked })} />{t('exposeEnabled')}</label>
-      <p className="dt-hint">{t('exposeEnabledHint')}</p>
+      <label className="dtn-check"><input type="checkbox" data-node-expose-enabled checked={draft.expose.enabled}
+        disabled={!editable} onChange={event => patchExpose({ enabled: event.target.checked })} />{t('exposeEnabled')}</label>
+      <p className="dtn-hint">{t('exposeEnabledHint')}</p>
       {draft.expose.enabled && <>
-        <label>{t('exposePort')}<input type="number" data-node-expose-port value={draft.expose.remotePort}
-          disabled={!editable}
+        <label className="dtn-field">{t('exposePort')}<input type="number" data-node-expose-port
+          value={draft.expose.remotePort} disabled={!editable}
           onChange={event => patchExpose({ remotePort: Number(event.target.value) || DEFAULT_EXPOSE.remotePort })} /></label>
-        <p className="dt-hint">{t('exposePortHint')}</p>
-        <button type="button" data-node-expose-check data-checking={checking ? 'true' : undefined}
-          disabled={!draft.ssh.host.trim() || !draft.ssh.user.trim() || !draft.ssh.keyPath.trim()}
-          onClick={() => { void checkPort() }}>{checking ? t('exposeChecking') : t('exposeCheck')}</button>
+        <p className="dtn-hint">{t('exposePortHint')}</p>
+        <div className="dtn-actions">
+          <button type="button" data-node-expose-check data-checking={checking ? 'true' : undefined}
+            disabled={!draft.ssh.host.trim() || !draft.ssh.user.trim() || !draft.ssh.keyPath.trim()}
+            onClick={() => { void checkPort() }}>{checking ? t('exposeChecking') : t('exposeCheck')}</button>
+        </div>
         {checked !== undefined && <>
-          <p data-port-check={portVerdict(checked)}>
+          <p data-port-check={portVerdict(checked)}
+            className={portVerdict(checked) === 'free' ? 'dtn-note' : 'dtn-note dtn-warn'}>
             {portVerdict(checked) === 'busy' ? t('exposeBusy')
               : portVerdict(checked) === 'free' ? t('exposeFree')
                 : `${t('exposeUnknown')} ${checked.output}`}
@@ -243,46 +286,60 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
           {/* A hub that never probes an idle link keeps the published port bound after this machine goes away, and
               the next reconnect fails on a port the hub still believes it holds. Reported, never fixed here: the
               file belongs to the person who administers the hub. */}
-          <p data-keepalive={keepaliveMissing(checked) ? 'missing' : 'ok'}>
+          <p data-keepalive={keepaliveMissing(checked) ? 'missing' : 'ok'}
+            className={keepaliveMissing(checked) ? 'dtn-note dtn-danger' : 'dtn-note'}>
             {keepaliveMissing(checked) ? t('keepaliveMissing') : t('keepaliveOk')}
           </p>
         </>}
       </>}
     </section>
 
-    <section data-section="access">
+    <section data-section="access" className="dtn-section">
       <h3>{t('accessSection')}</h3>
-      <p className="dt-hint">{t('accessHint')}</p>
-      <label>{t('accessLocalPort')}
+      <p className="dtn-hint">{t('accessHint')}</p>
+      <label className="dtn-field">{t('accessLocalPort')}
         <input data-node-local-web-port readOnly value={access?.localPort === undefined ? '' : String(access.localPort)} />
       </label>
       {access?.localPort === undefined
-        ? <p data-access="no-port">{t('accessNoPort')}</p>
-        : <label>{t('accessLocal')}
+        ? <p data-access="no-port" className="dtn-note dtn-warn">{t('accessNoPort')}</p>
+        : <label className="dtn-field">{t('accessLocal')}
             {/* An actual anchor, not only a copyable box: this is the address that opens here, and a person checking
                 "is my DSH up" should be able to click it. The published one below stays a plain box on purpose —
                 nothing listens on that port on this machine, so a link would be a dead one. */}
-            <a data-node-access-local href={urls.local} target="_blank" rel="noreferrer">{urls.local}</a>
+            <a data-node-access-local="true" href={urls.local ?? undefined} target="_blank" rel="noreferrer"
+              className="dtn-address">{urls.local}</a>
             <input data-node-access-local-value readOnly value={urls.local ?? ''} />
           </label>}
-      {access?.token === undefined && <p data-access="no-token">{t('accessNoToken')}</p>}
-      {urls.published !== undefined && <label>{t('accessPublished')}
+      {access?.token === undefined && <p data-access="no-token" className="dtn-note dtn-warn">{t('accessNoToken')}</p>}
+      {urls.published !== undefined && <label className="dtn-field">{t('accessPublished')}
         <input data-node-access-published readOnly value={urls.published} />
       </label>}
     </section>
 
-    <section data-section="jobs">
+    <section data-section="jobs" className="dtn-section">
       <h3>{t('jobSection')}</h3>
-      <label>{t('jobPreset')}<input data-node-job-preset value={draft.jobPreset} disabled={!editable}
-        onChange={event => patch({ jobPreset: event.target.value })} /></label>
-      <p className="dt-hint">{t('jobPresetHint')}</p>
+      <label className="dtn-field">{t('jobPreset')}
+        <select data-node-job-preset className="dtn-select" value={draft.jobPreset} disabled={!editable}
+          onChange={event => patch({ jobPreset: event.target.value })}>
+          {/* An empty value is the schema default, and `editsOf` skips the field entirely for it: a machine that has
+              never chosen a preset stays on whatever the schema says rather than being pinned to today's default. */}
+          <option value="">{t('jobPresetDefault')}</option>
+          {choice.options.map(option => <option key={option.value} value={option.value}
+            title={option.description ?? undefined}>{option.name}</option>)}
+        </select>
+      </label>
+      <p className="dtn-hint">{t('jobPresetHint')}</p>
+      {choice.unknown !== undefined && <p data-job-preset-unknown="true" className="dtn-note dtn-warn">
+        {t('jobPresetUnknown')}{choice.unknown}</p>}
     </section>
 
-    {missing.length > 0 && <p data-missing="true">{t('missing')}{missing.join(', ')}</p>}
-    {editable
-      ? <button type="button" data-node-save onClick={() => { void save() }}>{t('save')}</button>
-      : <p data-read-only="true">{t('readOnly')}</p>}
-    {notice !== undefined && <p data-notice>{notice}</p>}
+    {missing.length > 0 && <p data-missing="true" className="dtn-note dtn-warn">{t('missing')}{missing.join(', ')}</p>}
+    <div className="dtn-actions">
+      {editable
+        ? <button type="button" data-node-save className="dtn-save" onClick={() => { void save() }}>{t('save')}</button>
+        : <p data-read-only="true" className="dtn-note">{t('readOnly')}</p>}
+      {notice !== undefined && <p data-notice className="dtn-note">{notice}</p>}
+    </div>
   </div>
 }
 

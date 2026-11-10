@@ -10,17 +10,19 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parsePortCheck, portCheckArgs, portCheckScript, registerNodeRoutes, testArgs } from '../src/routes.ts'
 import type { AccessAnswer } from '../src/routes.ts'
+import type { PresetAnswer } from '../src/presets.ts'
+import { BUILT_IN_PRESETS } from '../src/presets.ts'
 
 type Handler = (req: never, res: never) => Promise<void>
 /** Mount the routes on a fake web server and return a request helper. */
 function serve(directory: string, run?: (argv: readonly string[], input?: string) => Promise<{ code: number | null; output: string }>,
-  access?: () => AccessAnswer) {
+  access?: () => AccessAnswer, presets?: () => PresetAnswer) {
   let handler = async (_req: unknown, _res: unknown): Promise<void> => {}
   const host = { port: 3088, register: (route: { handler: (req: never, res: never) => Promise<void> }) => {
     handler = route.handler as unknown as (req: unknown, res: unknown) => Promise<void>
     return () => {}
   } }
-  registerNodeRoutes(host as never, directory, run, access)
+  registerNodeRoutes(host as never, directory, run, access, presets)
   const request = async (method: string, path: string, payload?: unknown,
     headers: Record<string, string | undefined> = {}) => {
     let status = 0, text = ''
@@ -102,6 +104,36 @@ it('accepts the loopback names DSH may normalize to, and a TLS origin', async ()
   expect((await request('GET', 'keys', undefined, { host: 'localhost:3088' })).status).toBe(200)
   // A port that is not this service's is still another host.
   expect((await request('GET', 'keys', undefined, { host: '127.0.0.1:9999' })).status).toBe(403)
+})
+
+it('answers which presets the host accepts, from the catalog the device passes in', async () => {
+  // The picker may only offer names the permission service would take: any other value reaches a job that then has
+  // to fall back, which is exactly the mismatch the dropdown exists to remove.
+  const response = await serve(keysDir({}), undefined, undefined,
+    () => ({ options: [{ value: 'read-only', name: 'read-only', description: 'read' },
+      { value: 'workspace-write', name: 'workspace-write' }], defaultPreset: 'workspace-write', source: 'host' }))(
+    'GET', 'presets')
+  expect(response.status).toBe(200)
+  expect(response.body).toMatchObject({ defaultPreset: 'workspace-write', source: 'host' })
+  expect((response.body as { options: unknown[] }).options).toHaveLength(2)
+})
+
+it('falls back to the built-in preset table when the host has no service to ask', async () => {
+  // A device with no permission service still gets a usable picker: three presets the composition always has are
+  // better than an empty list, and a name outside them still falls back at job time, not here.
+  const response = await serve(keysDir({}))('GET', 'presets')
+  expect(response.status).toBe(200)
+  expect(response.body).toMatchObject({ source: 'built-in', defaultPreset: 'workspace-write' })
+  expect((response.body as { options: { value: string }[] }).options.map(option => option.value))
+    .toEqual(BUILT_IN_PRESETS.map(option => option.value))
+})
+
+it('survives a catalog that throws rather than failing the page', async () => {
+  const response = await serve(keysDir({}), undefined, undefined, () => {
+    throw new Error('no permission service')
+  })('GET', 'presets')
+  expect(response.status).toBe(200)
+  expect(response.body).toMatchObject({ source: 'built-in' })
 })
 
 it('answers unknown paths rather than pretending they work', async () => {

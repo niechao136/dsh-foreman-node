@@ -1,4 +1,4 @@
-## 0.5.0 — 2026-11-10
+## 0.6.0 — 2026-11-10
 
 ### 修复：断线时产生的回报会丢，枢纽只能等到超时
 
@@ -18,6 +18,42 @@
 ### 新增：`outboxFile` 配置
 
 留空表示只放内存（测试与只读设备）。
+
+## 0.5.0 — 2026-11-10
+
+### 改为：默认对话策略从填空变成下拉
+
+`jobPreset` 原来是自由输入框，只有任务真的派下来才会发现名字打错了：`session.ts` 警告一句、回退到
+`workspace-write`，于是页面说的和机器实际做的不是一回事。现在选项来自这台机器自己的权限服务：
+
+- 新增 `GET /foreman-node/api/presets`，回答 `{ options, defaultPreset, source }`，`options` 的每一行就是
+  `permissionPresets.catalog()` 里的 `PresetOption`（`value` / `name` / `description`），原样给页面用。
+- 读不到目录（没有该服务、服务抛错、目录为空）时回退到内置的三条 `read-only` / `workspace-write` /
+  `danger-full-access`，`source: 'built-in'`。少一个选择，好过一个永远加载不出来的下拉框。
+- 保存过、但当前目录里没有的预设名**不会被清空**：它仍然选中，页面加一行说明「这台机器不认识它，任务会退回
+  `workspace-write`」。空值仍然是「不改动这个字段」，`editsOf` 照样跳过它。
+- `src/presets.ts` 是主机和页面共用的一份定义，不 import 任何 `node:*`，所以浏览器包不因此多一个依赖。
+
+### 优化：配置面板样式
+
+`src/client/client.css` 随浏览器包一起走 `?raw` 进 `<style>`，用 DSH 的 `--dsw-alias-*` 令牌经 `--dtn-*`
+尺度定义，一条规则一行：
+
+类和令牌都带 `dtn-` 前缀、令牌挂在页面元素上而不是 `:root`：这个 section 挂进的是每个插件都在打样的
+同一个文档，`dt-*` / `:root --dt-*` 已被枢纽占用，撞名会把枢纽的宽度量到这边来。
+
+- 页面有固定阅读宽度、按区块分卡片；SSH 的五个短字段在宽的地方排一行（`auto-fit` 网格，窄了自动落回一列）。
+- 输入框、下拉框、按钮统一 32px 高、`--dtn-radius-sm` 圆角、聚焦时用 `--dtn-focus` 描边。
+- 提示文字（`.dtn-hint`）降为 13px 三级文字；测试结果、端口占用、keepalive 缺失这类「有事要说」的提示改成
+  带背景的 `.dtn-note`，错误用 `--dsw-alias-state-error-primary`，警告用 `state-warn`。
+- 地址用等宽字体，方便和终端里的对一眼。
+
+`tsdown.config.ts` 增加了 `?raw` 插件（照搬枢纽那份），`src/client/css.d.ts` 补了类型声明。
+
+### 测试
+
+`tests/presets.spec.ts` 覆盖选项合并与未知值保留；`tests/routes.spec.ts` 覆盖新路由的正常、无服务、抛错三条路径；
+`tests/panel.spec.ts` 改为断言下拉框而不是输入框，并覆盖「保存值不在目录里」的提示。
 
 ## 0.4.0 — 2026-11-09
 

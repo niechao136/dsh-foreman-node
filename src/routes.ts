@@ -1,6 +1,7 @@
 /**
  * The device's loopback routes: what keys exist, whether a given one reaches a given host, what address this
- * machine's page is on, and whether the hub can take the port it would publish.
+ * machine's page is on, whether the hub can take the port it would publish, and which permission presets this host
+ * can run a job under.
  *
  * These exist because the configuration page is a web page: it cannot read `~/.ssh`, cannot start ssh, and cannot
  * ask the process what port it was given. The device process can, so it answers all of them and the page renders
@@ -16,6 +17,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
 import { listKeys, type SshKey } from './keys.ts'
 import type { SshConfig } from './config.ts'
+import { builtInAnswer, type PresetAnswer } from './presets.ts'
 
 /** What one authentication test found. `ok` false is a normal answer, not an error. */
 export interface TestResult { ok: boolean; output: string }
@@ -222,7 +224,7 @@ export interface RouteHost {
  * mounted these routes, which is the only code that can see them.
  */
 export function registerNodeRoutes(host: RouteHost, directory: string, run: RunCommand = realRun,
-  access?: () => AccessAnswer): () => void {
+  access?: () => AccessAnswer, presets?: () => PresetAnswer): () => void {
   return host.register({ kind: 'prefix', path: NODE_PREFIX, handler: async (req, res) => {
     // The guard runs before routing: an unauthenticated caller learns nothing about what exists here.
     if (!sameOrigin(req, host.port, host.protocol)) { json(res, 403, { error: 'Same-origin request required' }); return }
@@ -240,6 +242,16 @@ export function registerNodeRoutes(host: RouteHost, directory: string, run: RunC
         // that would land on the sign-in wall.
         const answer: AccessAnswer = access?.()
           ?? { localPort: host.port, protocol: (host.protocol === 'https:' ? 'https:' : 'http:'), token: undefined }
+        json(res, 200, answer)
+        return
+      }
+      if (url.pathname === `${NODE_PREFIX}/api/presets` && method === 'GET') {
+        // The picker cannot invent this list: it has to be the names the host itself would accept, or a save writes a
+        // preset the job then has to fall back from. No callback means the caller mounted the routes without the
+        // permission service (and with no web UI there is no page either), so the built-in table answers instead.
+        let answer: PresetAnswer
+        try { answer = presets?.() ?? builtInAnswer() }
+        catch { answer = builtInAnswer() }
         json(res, 200, answer)
         return
       }
