@@ -43,7 +43,7 @@ declare module '@deepseek-ai/cordis' {
  * is missing, and a device that cannot say what it is would be rejected. `tests/version.spec.ts` pins the two
  * together, because this constant silently drifted three releases behind.
  */
-export const VERSION = '0.5.0'
+export const VERSION = '0.6.0'
 
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
