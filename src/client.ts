@@ -9,7 +9,8 @@
  * Nothing in this file writes a ledger, reads a policy, or opens a database — a device has none of those.
  */
 import { FOREMAN_PROTOCOL_VERSION, FrameDedupe, encodeFrame, parseFrame, type Frame, type HeartbeatFrame, type HelloFrame,
-  type ReportFrame, type Root, type AcceptedFrame, type AckFrame } from './protocol.ts'
+  type ReportFrame, type ReportDetail, type PartFrame, type Root, type AcceptedFrame, type AckFrame } from './protocol.ts'
+import { CAPABILITIES } from './protocol.ts'
 import { FrameOutbox } from './outbox.ts'
 
 /** What a socket has to offer; the global `WebSocket` satisfies it, and tests supply an object that does too. */
@@ -126,12 +127,22 @@ export class NodeClient {
    * connection instead of being lost. A `ready`/`blocked`/`failed` report is the final word on an assignment, and the
    * hub's `FrameDedupe` makes a replay harmless.
    */
-  report(assignmentId: string, report: { state: 'progress' | 'ready' | 'blocked' | 'failed'; summary: string; question?: string }): void {
+  report(assignmentId: string, report: { state: 'progress' | 'ready' | 'blocked' | 'failed'; summary: string; question?: string
+    detail?: ReportDetail }): void {
     const frame: ReportFrame = { v: FOREMAN_PROTOCOL_VERSION, type: 'report', frameId: nextFrameId('report'), assignmentId,
-      state: report.state, summary: report.summary, ...(report.question === undefined ? {} : { question: report.question }) }
+      state: report.state, summary: report.summary, ...(report.question === undefined ? {} : { question: report.question }),
+      ...(report.detail === undefined ? {} : { detail: report.detail }) }
     this.outbox.add(frame)
     if (this.send(frame)) this.outbox.settle(frame.frameId)
   }
+
+  /**
+   * Send one page of a job's transcript back to the hub.
+   *
+   * Not queued: a page answers a question someone is watching for right now, and replaying a stale page after a
+   * reconnect would arrive after the hub had already given up on it.
+   */
+  part(frame: PartFrame): void { this.send(frame) }
 
   /**
    * Send a frame the work depends on, queueing it first when it may need redelivery.
@@ -189,7 +200,7 @@ export class NodeClient {
 
   private hello(): void {
     const frame: HelloFrame = { v: FOREMAN_PROTOCOL_VERSION, type: 'hello', frameId: nextFrameId('hello'), deviceId: this.input.deviceId,
-      token: this.input.token, version: this.input.version, roots: this.input.roots(), running: this.input.running() }
+      token: this.input.token, version: this.input.version, capabilities: [...CAPABILITIES], roots: this.input.roots(), running: this.input.running() }
     this.send(frame)
   }
 

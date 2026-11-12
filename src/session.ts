@@ -18,6 +18,7 @@ import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-tools'
 import { MessageId, freezeMessage } from '@deepseek-ai/dsh-llm'
 import { foremanReportTool, type DeviceReport } from './report-tool.ts'
+import { FOREMAN_PROTOCOL_VERSION, MAX_DETAIL_ERROR, MAX_DETAIL_FILES, MAX_READ_CHARS, type PartFrame, type ReportDetail } from './protocol.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -171,7 +172,14 @@ export class JobSessions {
     const registrar = agent.ctx.tools
     // Wrap the reporter so this Session's own turn ending can tell whether a report ever went out.
     const reported = this.reports
-    const report = (id: string, deviceReport: DeviceReport): void => { reported.add(id); onReport(id, deviceReport) }
+    // A report leaving this Session is the only moment the hub hears about the job, so the structured summary is
+    // attached here: every report, wherever it came from, carries what the job actually did.
+    const report = (id: string, deviceReport: DeviceReport): void => {
+      reported.add(id)
+      void this.detail(agent).then(detail => {
+        onReport(id, detail === undefined ? deviceReport : { ...deviceReport, detail })
+      }, () => { onReport(id, deviceReport) })
+    }
     const tool = foremanReportTool({ report }, assignmentId)
     registrar.register({ name: tool.name, description: tool.description, parameters: tool.parameters,
       output: { schema: { type: 'object', additionalProperties: true },
@@ -229,4 +237,141 @@ export class JobSessions {
     }
     return found
   }
+
+  /**
+   * Summarise what a job did, from its own stored history.
+   *
+   * The hub never sees this Session, so without this it judges a remote ticket from one paragraph. Counting tool
+   * calls, collecting changed paths and the last error is enough for a person to tell "the tests failed" from "the
+   * deployment was not running", which is the question they actually ask a blocked ticket.
+   *
+   * Best effort by design: an unreadable or unusual history yields `undefined`, and the report still goes out.
+   */
+  async detail(agent: Agent): Promise<ReportDetail | undefined> {
+    try {
+      await this.ctx.sessionPersistence.flush()
+      await using handle = await this.ctx.sessionPersistence.open(agent.id, 'read')
+      const tools = new Map<string, { calls: number; failures: number }>()
+      const changed = new Set<string>()
+      let steps = 0, lastError = '', sawError = false
+      for (let offset = 0; ;) {
+        const { events } = await handle.read(offset, 512)
+        if (events.length === 0) break
+        for (const event of events) {
+          if (event.type === 'assistant/message') steps += 1
+          const name = event.type === 'tool/call' ? toolNameOf(event.data) : undefined
+          if (name) {
+            const entry = tools.get(name) ?? { calls: 0, failures: 0 }
+            entry.calls += 1
+            tools.set(name, entry)
+          }
+          if (event.type === 'tool/result') {
+            const failed = toolResultFailed(event.data)
+            const failedName = failed?.name
+            if (failedName) { const entry = tools.get(failedName); if (entry) entry.failures += 1 }
+            sawError = failed !== undefined
+            const text = failed?.text
+            if (text) lastError = text
+          }
+          for (const path of changedPathsOf(event)) changed.add(path)
+        }
+        offset += events.length
+      }
+      if (tools.size === 0 && changed.size === 0 && steps === 0 && !sawError) return undefined
+      const listed = [...changed]
+      return {
+        steps,
+        ...tools.size ? { tools: [...tools].map(([name, counts]) => ({ name, ...counts })).sort((left, right) => right.calls - left.calls) } : {},
+        ...changed.size ? { changedFiles: listed.slice(0, MAX_DETAIL_FILES).map(path => path.slice(0, 200)),
+          ...listed.length > MAX_DETAIL_FILES ? { changedOverflow: listed.length - MAX_DETAIL_FILES } : {} } : {},
+        ...lastError ? { lastError: lastError.slice(0, MAX_DETAIL_ERROR) } : {},
+      }
+    } catch (error) {
+      // A summary is an aid; failing to build one must never stop the report that carries the actual result.
+      this.ctx.logger.warn('dsh-foreman-node could not summarise %s: %s', agent.id, String(error))
+      return undefined
+    }
+  }
+  /**
+   * Render one page of a job's transcript for a person reading it through the hub.
+   *
+   * Only text is rendered: tool arguments and raw events are not what someone asks to see, and a page of JSON would
+   * cost far more of the hub's context than it is worth. The offsets index the rendered text, so paging is stable
+   * even though the underlying history is event-shaped.
+   */
+  async readTranscript(assignmentId: string, offset: number, limit: number, requestId: string): Promise<PartFrame> {
+    const sessionId = `job-${assignmentId}`
+    try {
+      const result = await this.ctx.sessionController.resolveAgent(sessionId as SessionId)
+      if ('error' in result) return { v: FOREMAN_PROTOCOL_VERSION, type: 'part', frameId: `part-${requestId}`, requestId,
+        total: 0, offset: 0, text: '', error: 'this device no longer holds that job' }
+      const text = await this.renderedHistory(result.agent as Agent)
+      const from = Math.max(0, Math.min(Math.trunc(offset), text.length))
+      const size = Math.max(1, Math.min(Math.trunc(limit) || MAX_READ_CHARS, MAX_READ_CHARS))
+      return { v: FOREMAN_PROTOCOL_VERSION, type: 'part', frameId: `part-${requestId}`, requestId,
+        total: text.length, offset: from, text: text.slice(from, from + size) }
+    } catch (error) {
+      return { v: FOREMAN_PROTOCOL_VERSION, type: 'part', frameId: `part-${requestId}`, requestId,
+        total: 0, offset: 0, text: '', error: String(error) }
+    }
+  }
+
+  /** The readable history of a Session: what was said, and which tools ran, in order. */
+  private async renderedHistory(agent: Agent): Promise<string> {
+    await this.ctx.sessionPersistence.flush()
+    await using handle = await this.ctx.sessionPersistence.open(agent.id, 'read')
+    const lines: string[] = []
+    for (let offset = 0; ;) {
+      const { events } = await handle.read(offset, 512)
+      if (events.length === 0) break
+      for (const event of events) {
+        if (event.type === 'assistant/message') {
+          const parts = (event.data as unknown as { message?: { content?: readonly { type?: string; text?: string }[] } })
+            ?.message?.content ?? []
+          const text = parts.filter(part => part?.type === 'text').map(part => part.text ?? '').join('\n').trim()
+          if (text !== '') lines.push(`assistant: ${text}`)
+        }
+        const name = event.type === 'tool/call' ? toolNameOf(event.data) : undefined
+        if (name) lines.push(`tool: ${name}`)
+        const failed = event.type === 'tool/result' ? toolResultFailed(event.data) : undefined
+        if (failed?.text) lines.push(`error: ${failed.text.slice(0, 500)}`)
+      }
+      offset += events.length
+    }
+    return lines.join('\n\n')
+  }
+}
+function toolNameOf(data: unknown): string | undefined {
+  const value = data as { name?: unknown; toolName?: unknown } | undefined
+  const name = typeof value?.name === 'string' ? value.name : typeof value?.toolName === 'string' ? value.toolName : undefined
+  return name && name !== '' ? name : undefined
+}
+/** A failed tool result: which tool, and the message that explains the failure. */
+function toolResultFailed(data: unknown): { name?: string; text?: string } | undefined {
+  const value = data as { isError?: unknown; error?: unknown; result?: unknown; name?: unknown } | undefined
+  if (!value) return undefined
+  const failed = value.isError === true || (value.error !== undefined && value.error !== null)
+  if (!failed) return undefined
+  const raw = value.error ?? value.result
+  const text = typeof raw === 'string' ? raw : raw === undefined ? '' : JSON.stringify(raw)
+  const name = typeof value.name === 'string' ? value.name : undefined
+  return { ...name ? { name } : {}, ...text ? { text } : {} }
+}
+/**
+ * Paths an event reports as written.
+ *
+ * Tool arguments differ per tool, so this reads the conventional keys rather than matching a tool name: a host that
+ * renames its write tool still yields paths, and an unknown tool simply contributes none.
+ */
+function changedPathsOf(event: { type: string; data?: unknown }): string[] {
+  if (event.type !== 'tool/call' && event.type !== 'tool/result') return []
+  const data = event.data as { arguments?: unknown; args?: unknown; input?: unknown; path?: unknown; file_path?: unknown } | undefined
+  if (!data) return []
+  const args = (data.arguments ?? data.args ?? data.input ?? data) as Record<string, unknown>
+  const found: string[] = []
+  for (const key of ['path', 'file_path', 'filePath', 'file']) {
+    const value = args[key]
+    if (typeof value === 'string' && value !== '') found.push(value)
+  }
+  return found
 }

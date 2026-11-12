@@ -13,6 +13,8 @@
  * runtime dependencies beyond the DSH services it is a peer plugin of.
  */
 
+import type { ReportDetail } from './protocol.ts'
+
 /** What a device may report; the same set the protocol's `NodeReportState` names. */
 export const REPORT_STATES = ['progress', 'ready', 'blocked', 'failed'] as const
 export type ReportState = typeof REPORT_STATES[number]
@@ -23,6 +25,11 @@ export interface DeviceReport {
   summary: string
   /** One question a person must answer; paired with `state: 'blocked'` in practice. */
   question?: string
+  /**
+   * What the job did, summarised. The caller attaches it rather than the model: the model writes the summary, but the
+   * counts and paths come from the Session's own history, so they cannot be embellished in the report text.
+   */
+  detail?: ReportDetail
 }
 
 /** The host a tool reports through: the client that owns the connection, or a test. */

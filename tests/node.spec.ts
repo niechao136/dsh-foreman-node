@@ -75,7 +75,8 @@ it('reports through the registered tool with the device state', async () => {
   await jobs.ensure({ assignmentId: 'a1', directory: '/w/shop', title: 'job a1' },
     (assignmentId, report) => sent.push({ assignmentId, report }))
   await registered[0]!.execute!({ state: 'ready', summary: 'done' }, { signal: new AbortController().signal })
-  expect(sent).toEqual([{ assignmentId: 'a1', report: { state: 'ready', summary: 'done' } }])
+  // The report is delivered after the job's summary is read from its history, so it arrives a tick later.
+  await vi.waitFor(() => expect(sent).toEqual([{ assignmentId: 'a1', report: { state: 'ready', summary: 'done' } }]))
 })
 
 it('turns a foreman_report call into a report with the device state', async () => {
@@ -362,6 +363,74 @@ describe('a job that ends without reporting', () => {
     await new Promise(resolve => setTimeout(resolve, 40))
     expect(reported).toHaveLength(1)
     expect(reported[0]!.summary).toBe('reported properly')
+  })
+
+  /**
+   * The hub never sees this Session, so a remote ticket is otherwise judged from one paragraph. The counts and paths
+   * come from the stored history rather than from the model's prose, so a report cannot decorate itself.
+   */
+  it('attaches what the job did, counted from its own history', async () => {
+    const history = [
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'starting' }] } } },
+      { type: 'tool/call', data: { name: 'read_file', arguments: { path: '/w/a.ts' } } },
+      { type: 'tool/call', data: { name: 'write_file', arguments: { path: '/w/src/b.ts' } } },
+      { type: 'tool/result', data: { name: 'read_file', isError: true, error: 'no such file: /w/a.ts' } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'done' }] } } },
+    ]
+    const { ctx, toolCtx } = hostFor(history)
+    const reported: { detail?: { steps?: number; tools?: { name: string; calls: number; failures: number }[]
+      changedFiles?: string[]; lastError?: string } }[] = []
+    const jobs = new JobSessions(ctx as never)
+    await jobs.ensure({ assignmentId: 'a3', directory: '/w', title: 'job a3' }, (_id, report) => { reported.push(report) })
+    await toolCtx.execute!({ state: 'ready', summary: 'all set' }, { signal: new AbortController().signal })
+    await vi.waitFor(() => expect(reported).toHaveLength(1))
+    const detail = reported[0]!.detail!
+    expect(detail.steps).toBe(2)
+    expect(detail.tools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'read_file', calls: 1, failures: 1 }),
+      expect.objectContaining({ name: 'write_file', calls: 1, failures: 0 })]))
+    expect(detail.changedFiles).toEqual(expect.arrayContaining(['/w/a.ts', '/w/src/b.ts']))
+    expect(detail.lastError).toContain('no such file')
+  })
+
+  it('still reports when the job history cannot be read at all', async () => {
+    const { ctx, toolCtx } = hostFor([])
+    const open = vi.fn(async () => { throw new Error('history unavailable') })
+    ;(ctx as unknown as { sessionPersistence: { open: typeof open } }).sessionPersistence.open = open
+    const reported: { summary: string }[] = []
+    const jobs = new JobSessions(ctx as never)
+    await jobs.ensure({ assignmentId: 'a4', directory: '/w', title: 'job a4' }, (_id, report) => { reported.push(report) })
+    await toolCtx.execute!({ state: 'ready', summary: 'still delivered' }, { signal: new AbortController().signal })
+    await vi.waitFor(() => expect(reported).toHaveLength(1))
+    // A summary is an aid; failing to build one must not swallow the result itself.
+    expect(reported[0]!.summary).toBe('still delivered')
+  })
+
+  /**
+   * A person reading a remote job needs the detail, but the device must not push its whole transcript up front. This
+   * is the on-demand page the hub asks for, and it has to be bounded so one page always fits a frame.
+   */
+  it('renders a bounded page of the transcript on request', async () => {
+    const history = [
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'looking into it' }] } } },
+      { type: 'tool/call', data: { name: 'run_tests' } },
+      { type: 'tool/result', data: { name: 'run_tests', isError: true, error: '2 tests failed' } },
+    ]
+    const { ctx } = hostFor(history)
+    const jobs = new JobSessions(ctx as never)
+    const page = await jobs.readTranscript('a5', 0, 4000, 'req-1')
+    expect(page.requestId).toBe('req-1')
+    expect(page.error).toBeUndefined()
+    expect(page.text).toContain('assistant: looking into it')
+    expect(page.text).toContain('tool: run_tests')
+    expect(page.text).toContain('error: 2 tests failed')
+    expect(page.total).toBe(page.text.length)
+    // A page never exceeds the frame budget, whatever the caller asks for.
+    const huge = await jobs.readTranscript('a5', 0, 999_999, 'req-2')
+    expect(huge.text.length).toBeLessThanOrEqual(4000)
+    // And a mid-text offset resumes rather than restarting.
+    const later = await jobs.readTranscript('a5', page.text.indexOf('tool: run_tests'), 13, 'req-3')
+    expect(later.text.startsWith('tool: run_tes')).toBe(true)
+    expect(later.offset).toBe(page.text.indexOf('tool: run_tests'))
   })
 })
 

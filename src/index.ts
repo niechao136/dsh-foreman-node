@@ -43,7 +43,7 @@ declare module '@deepseek-ai/cordis' {
  * is missing, and a device that cannot say what it is would be rejected. `tests/version.spec.ts` pins the two
  * together, because this constant silently drifted three releases behind.
  */
-export const VERSION = '0.6.1'
+export const VERSION = '0.7.0'
 
 /**
  * Configuration of one device, from the `dsh-foreman-node` entry in the profile's patch.
@@ -367,6 +367,13 @@ async function receive(ctx: Context, jobs: JobSessions, client: NodeClient, fram
       // The job's Session is left in place: a person may still want to read what it did.
       jobs.forget(frame.assignmentId)
       client.ack(frame)
+      return
+    }
+    if (frame.type === 'read') {
+      // A person wants the detail behind a report. The transcript stays on this machine and is rendered a page at a
+      // time, so a long job costs the hub one bounded frame per page rather than a full upload.
+      client.part(await jobs.readTranscript(frame.assignmentId, frame.offset, frame.limit, frame.requestId))
+      return
     }
     // Heartbeats and acks need no answer; a hello is the hub's own, which this side never sends.
   } catch (error) {
