@@ -158,6 +158,27 @@ it('falls back to the built-in presets when the device cannot answer', () => {
   expect(markup).not.toContain('data-job-preset-unknown')
 })
 
+/**
+ * A project can be added but not removed without this: the list only ever grew, so a project that moved or was
+ * renamed stayed in the configuration and the hub kept assigning work to a path nothing could serve.
+ */
+it('offers a remove button on every project row, so a project can be taken out again', () => {
+  const markup = render(config({ roots: [{ project: 'shop', path: 'F:/dsh/shop' },
+    { project: 'docs', path: 'F:/dsh/docs' }] }))
+  // One per row, addressed by index so a person can tell two rows apart in a test and in a screen reader.
+  expect(markup).toContain('data-remove-root="0"')
+  expect(markup).toContain('data-remove-root="1"')
+  expect(markup).toContain(zh.removeRoot)
+})
+
+it('offers no remove button when the host accepts no writes', () => {
+  const markup = renderToStaticMarkup(createElement(DevicePage, { t,
+    form: form(config({ roots: [{ project: 'shop', path: 'F:/dsh/shop' }] }), false) } as never))
+  // The row is still listed, but taking it out is an edit, so the control is disabled with the rest of the form.
+  expect(markup).toContain('data-remove-root="0"')
+  expect(markup).toMatch(/data-remove-root="0"[^>]*disabled/)
+})
+
 it('offers the port check next to the published port', () => {
   const markup = render(config({ ssh: { ...DEFAULT_SSH, enabled: true, host: 'h', user: 'u', keyPath: '/k' },
     expose: { enabled: true, remotePort: 13100 } }))

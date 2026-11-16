@@ -254,6 +254,10 @@ function DevicePage({ form, t, initialKeys, keysFailed: prefailed, initialAccess
           onChange={event => patch({ roots: draft.roots.map((item, at) => at === index ? { ...item, project: event.target.value } : item) })} /></label>
         <label className="dtn-field">{t('path')}<input value={root.path} disabled={!editable}
           onChange={event => patch({ roots: draft.roots.map((item, at) => at === index ? { ...item, path: event.target.value } : item) })} /></label>
+        {/* 删除要和保存一起生效：只改本地草稿，点「保存」时才写回配置，和新增一致。 */}
+        <button type="button" className="dtn-remove" data-remove-root={index} disabled={!editable}
+          aria-label={`${t('removeRoot')} ${index + 1}`}
+          onClick={() => patch({ roots: draft.roots.filter((_item, at) => at !== index) })}>{t('removeRoot')}</button>
       </div>)}
       <div className="dtn-actions">
         <button type="button" disabled={!editable}

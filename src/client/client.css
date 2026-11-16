@@ -12,6 +12,11 @@
 .dtn-field { display: flex; flex-direction: column; gap: var(--dtn-space-2); min-width: 0; font-size: var(--dtn-fs-body); line-height: 1.5; color: var(--dsw-alias-label-secondary); }
 /* The SSH block collects five short fields side by side; a column per field wastes the width a form has. */
 .dtn-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--dtn-space-3); }
+/* 项目路径的一行：两个输入框加一个删除按钮。按钮跟着同一行的底部对齐，和输入框一样高。 */
+.dtn-fields > .dtn-remove { align-self: end; height: 32px; padding: 0 var(--dtn-space-3); border: var(--dtn-border); border-radius: var(--dtn-radius-sm); font: inherit; font-size: var(--dtn-fs-sub); font-weight: 500; color: var(--dsw-alias-label-primary); background: transparent; cursor: pointer; transition: background var(--dtn-dur) var(--dtn-ease); }
+.dtn-fields > .dtn-remove:hover:not(:disabled) { background: var(--dtn-surface-soft); }
+.dtn-fields > .dtn-remove:disabled { opacity: .5; cursor: not-allowed; }
+.dtn-fields > .dtn-remove:focus-visible { outline: var(--dtn-focus); outline-offset: 2px; }
 .dtn-field > input[type="text"], .dtn-field > input[type="password"], .dtn-field > input[type="number"], .dtn-field > input:not([type]) { box-sizing: border-box; width: 100%; min-width: 0; height: 32px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dtn-radius-sm); padding: 0 var(--dtn-space-2); font: inherit; font-size: var(--dtn-fs-sub); color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1, transparent); }
 .dtn-field > input:focus-visible, .dtn-select:focus-visible { outline: var(--dtn-focus); outline-offset: 1px; }
 .dtn-field > input:disabled, .dtn-select:disabled { color: var(--dsw-alias-label-tertiary); cursor: not-allowed; }
